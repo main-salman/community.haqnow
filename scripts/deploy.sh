@@ -95,13 +95,13 @@ cd /opt/foi-archive/appsrc/backend
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip >/dev/null
-python -m pip install --upgrade setuptools wheel >/devnull 2>&1 || true
+python -m pip install --upgrade setuptools wheel >/dev/null 2>&1 || true
 
-# Install backend dependencies with retry after toolchain upgrade
+# Install backend dependencies using our toolchain (no build isolation)
+export PIP_NO_BUILD_ISOLATION=1
 if ! pip install -r requirements.txt >/dev/null; then
-  log "First install failed; upgrading build toolchain and retrying..."
-  python -m pip install --upgrade pip setuptools wheel >/dev/null || true
-  pip install -r requirements.txt >/dev/null || true
+  log "Install failed even without build isolation; printing pip debug"
+  pip -vvv install -r requirements.txt || true
 fi
 
 # Create RAG tables (best-effort)
@@ -150,6 +150,12 @@ sleep 3
 log "Health checks:"
 (set -x; curl -sf http://localhost/api/health || true)
 (set -x; curl -sf http://localhost || true)
+
+# If health failing, show backend logs tail
+if ! curl -sf http://localhost/api/health >/dev/null; then
+  echo "--- backend logs (last 200 lines) ---"
+  tail -n 200 /var/log/foi/backend.out || true
+fi
 REMOTE_EOF
 
 log "Deployment completed."
