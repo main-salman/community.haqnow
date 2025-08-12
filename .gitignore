@@ -1,0 +1,41 @@
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Terraform
+**/.terraform/**
+*.tfstate
+*.tfstate.*
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraform.lock.hcl
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.venv/
+venv/
+
+# Node
+node_modules/
+dist/
+build/
+.npmrc
+
+# Logs
+*.log
+/var/log/
+/logs/
+
+# OS
+.DS_Store
+Thumbs.db
