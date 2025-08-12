@@ -70,6 +70,14 @@ else
   (cd appsrc && git fetch --all && git reset --hard origin/main)
 fi
 
+# Export environment from .env for child processes
+if [[ -f /opt/foi-archive/.env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source /opt/foi-archive/.env
+  set +a
+fi
+
 # Backend setup
 cd /opt/foi-archive/appsrc/backend
 python3 -m venv .venv
