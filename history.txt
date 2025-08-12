@@ -1,0 +1,37 @@
+2025-08-12 00:00 UTC — Initialized project discussion for community.haqnow.com.
+- Reviewed `prompt.txt` requirements.
+- Asked 10 clarifying questions prior to implementation (no code/infra changes yet).
+
+2025-08-12 00:05 UTC — Clarifying questions prior to design:
+- Q1 (Auth & MFA): Which identity provider should we use (e.g., Auth0, Cognito, Keycloak, custom)? MFA method(s) required: TOTP app, SMS, email, WebAuthn? Any SSO (SAML/OIDC) needs?
+- Q2 (Tenancy & Roles): Is this single-tenant per organization or multi-tenant with org workspaces? Required roles/permissions (e.g., Admin, Editor, Viewer) and sharing model (org-wide, groups, per-document)?
+- Q3 (Ingestion Limits): Supported file types (PDF, images, Office docs, text, ZIP)? Max file size and total batch size? Expected peak upload volume and daily totals? Any storage quotas per user/org?
+- Q4 (Bulk Upload UX/APIs): Upload via web UI only or also API/CSV/S3 drop folder? Should we support resumable uploads and background processing with email notifications?
+- Q5 (OCR & Translation): Preferred providers (e.g., Tesseract/vLLM/Cloud OCR; DeepL/Google/OpenAI for translation)? Languages in scope, accuracy vs cost trade-offs, and data privacy constraints (no external data egress)?
+- Q6 (Search Engine): Preference for search stack: Postgres + pgvector, OpenSearch/Elasticsearch, or a managed vector DB? Do we need hybrid search (BM25 + vectors) with filters on tags/date/owners?
+- Q7 (AI Q&A & Grounding): Which LLM(s) are allowed (OpenAI/Azure, local, or both)? Must answers include citations/snippets and confidence? Any guardrails/compliance rules to enforce?
+- Q8 (Collaboration & Editing): Level of "live editing" required: Google-Docs-style coauthoring on full documents, or annotations/comments/highlights over rendered PDFs? Need track changes/version history?
+- Q9 (Redaction & Export): Should redactions be permanent (burned-in) on derived copies while retaining originals? Export formats (PDF, selected pages/regions), and audit logs for redaction actions?
+- Q10 (Security, Compliance, Infra): Data residency (which Exoscale zone), encryption/KMS, backups/DR, retention/deletion SLAs, logging/audit. Any required certifications (e.g., ISO, SOC)? Also confirm environments (dev/test/prod), domain/DNS, and email/SMS providers for notifications/MFA.
+
+2025-08-12 00:10 UTC — Requirements confirmed by user:
+- A1 (Auth & MFA): Same as `haqnow` repo.
+- A2 (Tenancy & Roles): Single-tenant. Roles: Admin, Editor, Viewer.
+- A3 (Ingestion Limits/Types): Common docs (Word, PDF, text) and images.
+- A4 (Bulk Upload): Support via UI and API.
+- A5 (OCR & Translation): Tesseract + Google Translation, same as `haqnow`.
+- A6 (Search Engine): Same as `haqnow` repo.
+- A7 (AI Q&A): Local, same as `haqnow` repo.
+- A8 (Collaboration): Google Doc-style live editing; no version history.
+- A9 (Redaction/Export): Redactions on derived copies; export as PDF.
+- A10 (Security/Infra): Same as `haqnow`; provide server IP after deploy for DNS `community.haqnow.com`.
+
+2025-08-12 00:20 UTC — Infra setup initialized:
+- Added `terraform/main.tf`, `terraform/variables.tf`, `terraform/cloud-init.yml` based on reference `haqnow` infra.
+- Minor improvement: DB `ip_filter` now binds to the instance public IP dynamically.
+- Added `Makefile` targets: `init`, `apply`, `ip`, `destroy` using `.env` values.
+- Plan: run Terraform init/apply to create server, DBs, and output instance IP for DNS.
+
+2025-08-12 00:26 UTC — Terraform cycle fix:
+- Introduced `allowed_db_cidrs` in `terraform/variables.tf` and used it for DB `ip_filter` to break cycle.
+- Default `0.0.0.0/0` temporarily; will update to instance `/32` after provisioning by running `terraform apply` with the resolved IP.

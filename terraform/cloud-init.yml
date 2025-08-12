@@ -1,0 +1,320 @@
+#cloud-config
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - docker.io
+  - docker-compose
+  - nginx
+  - certbot
+  - python3-certbot-nginx
+  - git
+  - curl
+  - wget
+  - unzip
+  - mysql-server
+  - mysql-client
+  - python3
+  - python3-pip
+
+users:
+  - name: foi
+    groups: docker
+    shell: /bin/bash
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+
+runcmd:
+  - systemctl enable docker
+  - systemctl start docker
+  - usermod -aG docker ubuntu
+  - usermod -aG docker foi
+  - systemctl enable mysql
+  - systemctl start mysql
+  - pip3 install pymysql psycopg2-binary requests
+  - mkdir -p /opt/foi-archive
+  - mkdir -p /var/log/foi
+  - chown foi:foi /opt/foi-archive
+  - chown foi:foi /var/log/foi
+  - cd /opt/foi-archive
+  - |
+    cat > /opt/foi-archive/configure_database.py << 'EOF'
+    #!/usr/bin/env python3
+    import os, sys, time, pymysql, subprocess
+    from urllib.parse import urlparse
+    
+    def log(m):
+        print(f"[DB-CONFIG] {m}")
+    
+    def test_exoscale_database():
+        try:
+            exoscale_host = "${mysql_host}"
+            if not exoscale_host or exoscale_host == "YOUR_EXOSCALE_DB_HOST":
+                log("EXOscale database not configured")
+                return False
+            if exoscale_host.startswith('mysql://'):
+                parsed = urlparse(exoscale_host)
+                host = parsed.hostname
+                port = parsed.port or 3306
+                user = parsed.username
+                password = parsed.password
+                database = parsed.path.lstrip('/')
+            else:
+                host = exoscale_host
+                port = 3306
+                user = "${mysql_user}"
+                password = "${mysql_password}"
+                database = "${mysql_database}"
+            log(f"Testing EXOscale database connection to {host}:{port}")
+            connection = pymysql.connect(host=host, port=port, user=user, password=password, database=database, connect_timeout=10)
+            cursor = connection.cursor()
+            cursor.execute("SELECT 1")
+            result = cursor.fetchone()
+            cursor.close(); connection.close()
+            if result and result[0] == 1:
+                log("✅ EXOscale database connection successful")
+                return {'type': 'exoscale','host': host,'port': port,'user': user,'password': password,'database': database}
+            else:
+                log("❌ EXOscale database connection failed"); return False
+        except Exception as e:
+            log(f"❌ EXOscale database connection error: {e}"); return False
+    
+    def setup_local_mysql():
+        try:
+            log("Setting up local MySQL as fallback...")
+            mysql_root_password = "${mysql_root_password}"
+            mysql_user = "${mysql_user}"
+            mysql_password = "${mysql_password}"
+            mysql_database = "${mysql_database}"
+            subprocess.run(["mysql","-e", f"ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '{mysql_root_password}';"], check=True)
+            for cmd in [
+                f"CREATE DATABASE IF NOT EXISTS {mysql_database};",
+                f"CREATE USER IF NOT EXISTS '{mysql_user}'@'localhost' IDENTIFIED BY '{mysql_password}';",
+                f"GRANT ALL PRIVILEGES ON {mysql_database}.* TO '{mysql_user}'@'localhost';",
+                "FLUSH PRIVILEGES;"
+            ]:
+                subprocess.run(["mysql","-u","root",f"-p{mysql_root_password}","-e",cmd], check=True)
+            connection = pymysql.connect(host='localhost', port=3306, user=mysql_user, password=mysql_password, database=mysql_database)
+            cursor = connection.cursor(); cursor.execute("SELECT 1"); result = cursor.fetchone(); cursor.close(); connection.close()
+            if result and result[0] == 1:
+                log("✅ Local MySQL setup successful")
+                return {'type':'local','host':'localhost','port':3306,'user':mysql_user,'password':mysql_password,'database':mysql_database}
+            else:
+                log("❌ Local MySQL setup failed"); return False
+        except Exception as e:
+            log(f"❌ Local MySQL setup error: {e}"); return False
+    
+    def create_env_file(db_config):
+        env_content = f'''# Exoscale S3 Configuration
+EXOSCALE_S3_ACCESS_KEY=${s3_access_key}
+EXOSCALE_S3_SECRET_KEY=${s3_secret_key}
+EXOSCALE_S3_ENDPOINT=${s3_endpoint}
+EXOSCALE_S3_REGION=${s3_region}
+EXOSCALE_BUCKET=${s3_bucket}
+EXOSCALE_S3_PUBLIC_URL=https://${s3_endpoint}/${s3_bucket}
+
+# Admin Configuration
+admin_email=${admin_email}
+admin_password=${admin_password}
+
+# Rate limiting
+UPLOAD_TIMEOUT_SECONDS=120
+
+# JWT Configuration
+JWT_SECRET_KEY=${jwt_secret}
+
+# Database Configuration - {db_config['type'].upper()}
+MYSQL_HOST={db_config['host']}
+MYSQL_PORT={db_config['port']}
+MYSQL_USER={db_config['user']}
+MYSQL_PASSWORD={db_config['password']}
+MYSQL_DATABASE={db_config['database']}
+DATABASE_URL=mysql+pymysql://{db_config['user']}:{db_config['password']}@{db_config['host']}:{db_config['port']}/{db_config['database']}
+DATABASE_TYPE={db_config['type']}
+
+# PostgreSQL RAG Database Configuration
+POSTGRES_RAG_URI=${postgres_rag_uri}
+POSTGRES_RAG_USER=${postgres_user}
+POSTGRES_RAG_PASSWORD=${postgres_password}
+POSTGRES_RAG_DATABASE=${postgres_database}
+
+# Email Configuration
+SENDGRID_API_KEY=${sendgrid_api_key}
+FROM_EMAIL=noreply@fadih.org
+
+# Redis Configuration
+REDIS_URL=redis://localhost:6379
+
+# Application Configuration
+HOST=0.0.0.0
+PORT=8000
+DEBUG=false
+'''
+        with open('/opt/foi-archive/.env','w') as f: f.write(env_content)
+        log(f"✅ Environment file created with {db_config['type']} database configuration")
+    
+    def main():
+        log("🚀 Starting database configuration...")
+        db_config = test_exoscale_database() or setup_local_mysql()
+        if not db_config:
+            log("❌ No database configuration succeeded"); sys.exit(1)
+        create_env_file(db_config)
+        log(f"🎉 Database configuration completed using {db_config['type']} database")
+        with open('/opt/foi-archive/.db_status','w') as f:
+            f.write(f"DATABASE_TYPE={db_config['type']}\n"); f.write(f"DATABASE_HOST={db_config['host']}\n"); f.write(f"CONFIGURED_AT={time.time()}\n")
+    if __name__ == "__main__": main()
+    EOF
+  - chmod +x /opt/foi-archive/configure_database.py
+  - cd /opt/foi-archive && python3 configure_database.py
+  - |
+    cat > /opt/foi-archive/docker-compose.yml << 'EOF'
+    version: '3.8'
+    services:
+      redis:
+        image: redis:7-alpine
+        restart: unless-stopped
+        ports: ["6379:6379"]
+        volumes: [redis_data:/data]
+      backend:
+        build: { context: ./backend, dockerfile: Dockerfile }
+        restart: unless-stopped
+        ports: ["8000:8000"]
+        env_file: [.env]
+        depends_on: [redis]
+        volumes: ["./backend:/app","/var/log/foi:/var/log/foi"]
+      frontend:
+        build: { context: ./frontend, dockerfile: Dockerfile }
+        restart: unless-stopped
+        ports: ["3000:3000"]
+        depends_on: [backend]
+        volumes: ["./frontend:/app","/var/log/foi:/var/log/foi"]
+    volumes: { redis_data: {} }
+    EOF
+  - mkdir -p /opt/foi-archive/backend
+  - |
+    cat > /opt/foi-archive/backend/Dockerfile << 'EOF'
+    FROM python:3.11-slim
+    WORKDIR /app
+    RUN apt-get update && apt-get install -y \
+        tesseract-ocr \
+        poppler-utils \
+        libgl1-mesa-glx \
+        libglib2.0-0 \
+        pkg-config \
+        libmysqlclient-dev \
+        python3-dev \
+        build-essential \
+        && rm -rf /var/lib/apt/lists/*
+    COPY requirements.txt .
+    RUN pip install --no-cache-dir -r requirements.txt
+    COPY . .
+    EXPOSE 8000
+    CMD ["python","-m","uvicorn","main:app","--host","0.0.0.0","--port","8000"]
+    EOF
+  - mkdir -p /opt/foi-archive/frontend
+  - |
+    cat > /opt/foi-archive/frontend/Dockerfile << 'EOF'
+    FROM node:18-alpine
+    WORKDIR /app
+    COPY package*.json ./
+    RUN npm ci
+    COPY . .
+    RUN npm run build
+    EXPOSE 3000
+    CMD ["npm","start"]
+    EOF
+  - |
+    cat > /etc/nginx/sites-available/foi-archive << 'EOF'
+    server {
+        listen 80;
+        server_name _;
+        client_max_body_size 100M;
+        location / { proxy_pass http://localhost:3000; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection 'upgrade'; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto $scheme; proxy_cache_bypass $http_upgrade; }
+        location /api/ { proxy_pass http://localhost:8000/; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection 'upgrade'; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto $scheme; proxy_cache_bypass $http_upgrade; }
+        location /health { proxy_pass http://localhost:8000/health; }
+        location /db-status { alias /opt/foi-archive/.db_status; }
+    }
+    EOF
+  - ln -s /etc/nginx/sites-available/foi-archive /etc/nginx/sites-enabled/
+  - rm -f /etc/nginx/sites-enabled/default
+  - nginx -t
+  - systemctl enable nginx
+  - systemctl restart nginx
+  - chown -R foi:foi /opt/foi-archive
+  - chmod 600 /opt/foi-archive/.env
+  - chmod 644 /opt/foi-archive/.db_status
+  - |
+    cat > /opt/foi-archive/check_database.py << 'EOF'
+    #!/usr/bin/env python3
+    import os, sys, pymysql
+    from urllib.parse import urlparse
+    def check_database():
+        try:
+            db_url = os.getenv('DATABASE_URL')
+            if not db_url: return False
+            p = urlparse(db_url)
+            connection = pymysql.connect(host=p.hostname, port=p.port or 3306, user=p.username, password=p.password, database=p.path.lstrip('/'))
+            cursor = connection.cursor(); cursor.execute("SELECT 1"); cursor.fetchone(); cursor.close(); connection.close(); return True
+        except: return False
+    if __name__ == "__main__":
+        ok = check_database(); print("✅ Database connection OK" if ok else "❌ Database connection failed"); sys.exit(0 if ok else 1)
+    EOF
+  - chmod +x /opt/foi-archive/check_database.py
+  - |
+    cat > /etc/systemd/system/foi-archive.service << 'EOF'
+    [Unit]
+    Description=HaqNow.com Application
+    After=docker.service network.target
+    Requires=docker.service
+    [Service]
+    Type=oneshot
+    RemainAfterExit=yes
+    WorkingDirectory=/opt/foi-archive
+    User=foi
+    Group=foi
+    ExecStart=/usr/bin/docker-compose up -d
+    ExecStop=/usr/bin/docker-compose down
+    TimeoutStartSec=300
+    Restart=on-failure
+    [Install]
+    WantedBy=multi-user.target
+    EOF
+  - systemctl daemon-reload
+  - systemctl enable foi-archive
+  - |
+    cat > /opt/foi-archive/deployment_status.txt << 'EOF'
+    HaqNow.com Server Deployment Status
+    ==================================
+    ✅ Server configuration completed
+    ✅ Docker and Docker Compose installed
+    ✅ Nginx configured and running
+    ✅ Database configuration completed
+    ✅ Application service configured
+    Next Steps:
+    1. Clone your application repository to /opt/foi-archive
+    2. Verify database connectivity: python3 /opt/foi-archive/check_database.py
+    3. Start the application: sudo systemctl start foi-archive
+    4. Check application logs: sudo journalctl -u foi-archive -f
+    EOF
+
+write_files:
+  - path: /var/log/foi/application.log
+    content: ""
+    owner: foi:foi
+    permissions: '0644'
+  - path: /var/log/foi/database.log
+    content: ""
+    owner: foi:foi
+    permissions: '0644'
+
+final_message: |
+  🎉 HaqNow.com server setup complete!
+  To check the deployment status:
+  cat /opt/foi-archive/deployment_status.txt
+  To verify database configuration:
+  cat /opt/foi-archive/.db_status
+  The application will be available at:
+  - Frontend: http://your-server-ip/
+  - Backend API: http://your-server-ip/api/
+  - Health check: http://your-server-ip/health
+  - Database status: http://your-server-ip/db-status

@@ -1,0 +1,18 @@
+Prompt for cursor:
+	- Create a platform called community.haqnow.com
+		○ Users should be able to upload hundreds or thousands of documents at once
+		○ User should be able to search them by words in the document
+		○ Users should be able to use AI to ask questions about the documents
+		○ Administrator should be able to add remove users. Users should use MFA.
+		○ Uploaded documents should be OCR and translated to English if they're not in English
+		○ Users should be able to make notes or add comments on the documents online
+		○ You shares should also be able to easily redact portions of the document and export portions of the documents as PDF
+		○ The uploaded documents should be stripped of metadata, regardless of which format the document is uploaded in
+		○ User should be able to edit the documents live together and be able to see the changes two documents live together
+		○ User should be able to highlight sections of the document
+		○ User should be able to add tags to documents and then search documents by tags as well
+		○ Some of the required features can be re-used from https://github.com/main-salman/haqnow - although that will remain a separate project
+		○ Deploy to the same account as https://github.com/main-salman/haqnow but use a new server and new Exoscale bucket - build the underlying infrastructure required
+Use .env file - that has credentials for exoscale to build infrastructure - use https://github.com/main-salman/haqnow as a template for deploying the infrastructure as well
+Ask me 10 questions before building
+
