@@ -97,15 +97,24 @@ source .venv/bin/activate
 python -m pip install --upgrade pip >/dev/null
 python -m pip install --upgrade setuptools wheel >/dev/null 2>&1 || true
 
-# Install backend dependencies using our toolchain (no build isolation)
-export PIP_NO_BUILD_ISOLATION=1
-if ! pip install -r requirements.txt >/dev/null; then
-  log "Install failed even without build isolation; printing pip debug"
-  pip -vvv install -r requirements.txt || true
+# First, ensure core runtime deps so the server can start
+log "Installing core backend deps..."
+pip install -q fastapi==0.104.1 uvicorn==0.24.0 pydantic==2.5.2 python-dotenv==1.0.0 structlog==23.2.0 requests==2.31.0 || true
+
+# Then install full requirements (best-effort, do not abort deploy if some extras fail)
+log "Installing full backend requirements (best-effort)..."
+if ! pip install -r requirements.txt >/var/log/foi/pip.install.log 2>&1; then
+  log "Full requirements install failed; continuing with core deps. See /var/log/foi/pip.install.log"
 fi
 
 # Create RAG tables (best-effort)
 python create_rag_tables.py || true
+
+# Verify uvicorn installed
+if ! command -v uvicorn >/dev/null 2>&1; then
+  log "uvicorn missing; installing explicitly..."
+  pip install -q uvicorn==0.24.0
+fi
 
 # Start backend (uvicorn)
 log "Starting backend (uvicorn)..."
@@ -128,6 +137,7 @@ server {
         try_files $uri /index.html;
     }
 
+    # Backend API (strip /api/ prefix)
     location /api/ {
         proxy_pass http://localhost:8000/;
         proxy_http_version 1.1;
@@ -135,6 +145,11 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Backend health (maps /health directly)
+    location = /health {
+        proxy_pass http://localhost:8000/health;
     }
 }
 NGINX
@@ -148,11 +163,11 @@ systemctl restart nginx || true
 # Health checks
 sleep 3
 log "Health checks:"
+(set -x; curl -sf http://localhost/health || true)
 (set -x; curl -sf http://localhost/api/health || true)
-(set -x; curl -sf http://localhost || true)
 
 # If health failing, show backend logs tail
-if ! curl -sf http://localhost/api/health >/dev/null; then
+if ! curl -sf http://localhost/health >/dev/null; then
   echo "--- backend logs (last 200 lines) ---"
   tail -n 200 /var/log/foi/backend.out || true
 fi
