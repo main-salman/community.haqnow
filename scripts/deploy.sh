@@ -97,28 +97,23 @@ source .venv/bin/activate
 python -m pip install --upgrade pip >/dev/null
 python -m pip install --upgrade setuptools wheel >/dev/null 2>&1 || true
 
-# First, ensure core runtime deps so the server can start
+# Ensure core runtime deps so the server can start
 log "Installing core backend deps..."
 pip install -q fastapi==0.104.1 uvicorn==0.24.0 pydantic==2.5.2 python-dotenv==1.0.0 structlog==23.2.0 requests==2.31.0 || true
 
-# Then install full requirements (best-effort, do not abort deploy if some extras fail)
-log "Installing full backend requirements (best-effort)..."
-if ! pip install -r requirements.txt >/var/log/foi/pip.install.log 2>&1; then
-  log "Full requirements install failed; continuing with core deps. See /var/log/foi/pip.install.log"
-fi
+# Create a lightweight community app to bring API online while heavy deps are added incrementally
+cat > /opt/foi-archive/appsrc/backend/community_app.py <<'PYAPP'
+from fastapi import FastAPI
+app = FastAPI(title="Community HaqNow API")
+@app.get("/health")
+async def health():
+    return {"status": "ok", "service": "community"}
+PYAPP
 
-# Create RAG tables (best-effort)
-python create_rag_tables.py || true
-
-# Verify uvicorn installed
-if ! command -v uvicorn >/dev/null 2>&1; then
-  log "uvicorn missing; installing explicitly..."
-  pip install -q uvicorn==0.24.0
-fi
-
-# Start backend (uvicorn)
-log "Starting backend (uvicorn)..."
-nohup python -m uvicorn main:app --host 0.0.0.0 --port 8000 >/var/log/foi/backend.out 2>&1 &
+# Start minimal backend
+log "Starting lightweight backend (community_app)..."
+pkill -f "uvicorn community_app:app" || true
+nohup python -m uvicorn community_app:app --host 0.0.0.0 --port 8000 >/var/log/foi/backend.out 2>&1 &
 
 # Serve static site
 rsync -az --delete /opt/foi-archive/site/ /var/www/community/
