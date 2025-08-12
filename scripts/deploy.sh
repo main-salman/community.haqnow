@@ -34,10 +34,11 @@ if [[ ! -f "$PROJECT_ROOT/.env" ]]; then
   exit 1
 fi
 
-# Copy .env to server
-log "Copying .env to server..."
-ssh -o StrictHostKeyChecking=no root@"$SERVER_IP" 'mkdir -p /opt/foi-archive'
+# Copy .env and site to server
+log "Copying .env and static site to server..."
+ssh -o StrictHostKeyChecking=no root@"$SERVER_IP" 'mkdir -p /opt/foi-archive /opt/foi-archive/site'
 scp -o StrictHostKeyChecking=no "$PROJECT_ROOT/.env" root@"$SERVER_IP":/opt/foi-archive/.env || true
+rsync -az --delete "$PROJECT_ROOT/site/" root@"$SERVER_IP":/opt/foi-archive/site/
 
 # Remote setup and deployment (non-docker)
 log "Deploying on server (non-docker model)..."
@@ -47,22 +48,21 @@ set -euo pipefail
 log() { echo -e "[remote] $*"; }
 
 # Base dirs
-mkdir -p /opt/foi-archive
+mkdir -p /opt/foi-archive /var/log/foi /var/www/community
 cd /opt/foi-archive
 
 # Install prerequisites
 log "Installing system prerequisites..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y >/dev/null
-# Core tooling first (without nodejs/npm)
 apt-get install -y \
   ca-certificates curl gnupg \
   python3 python3-venv python3-pip \
-  tesseract-ocr poppler-utils \
+  tesseract-ocr poppler-utils libgl1 libglib2.0-0 \
   nginx git >/dev/null || true
 apt-get -y --fix-broken install >/dev/null || true
 
-# Install Node.js 20 LTS via NodeSource
+# Install Node.js 20 LTS via NodeSource (for potential future frontend builds)
 if ! command -v node >/dev/null 2>&1 || ! node -v | grep -q '^v20'; then
   install -m 0755 -d /etc/apt/keyrings
   curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
@@ -72,14 +72,14 @@ if ! command -v node >/dev/null 2>&1 || ! node -v | grep -q '^v20'; then
   apt-get -y --fix-broken install >/dev/null || true
 fi
 
-# Clone or update application source (haqnow baseline)
+# Clone or update application source (backend only)
 if [[ ! -d appsrc/.git ]]; then
-  log "Cloning baseline app source (haqnow)..."
+  log "Cloning baseline app source (haqnow backend)..."
   rm -rf appsrc
-  git clone https://github.com/main-salman/haqnow appsrc
+  git clone --depth 1 https://github.com/main-salman/haqnow appsrc
 else
   log "Updating baseline app source..."
-  (cd appsrc && git fetch --all && git reset --hard origin/main)
+  (cd appsrc && git fetch --depth 1 origin main && git reset --hard origin/main)
 fi
 
 # Export environment from .env for child processes
@@ -94,37 +94,37 @@ fi
 cd /opt/foi-archive/appsrc/backend
 python3 -m venv .venv
 source .venv/bin/activate
-pip install --upgrade pip >/dev/null
-pip install -r requirements.txt >/dev/null || true
-# Optional RAG deps (best-effort)
-if [[ -f requirements-rag.txt ]]; then pip install -r requirements-rag.txt >/dev/null || true; fi
+python -m pip install --upgrade pip >/dev/null
+python -m pip install --upgrade setuptools wheel >/devnull 2>&1 || true
+
+# Install backend dependencies with retry after toolchain upgrade
+if ! pip install -r requirements.txt >/dev/null; then
+  log "First install failed; upgrading build toolchain and retrying..."
+  python -m pip install --upgrade pip setuptools wheel >/dev/null || true
+  pip install -r requirements.txt >/dev/null || true
+fi
 
 # Create RAG tables (best-effort)
 python create_rag_tables.py || true
 
-# Start backend (systemd optional, use nohup for now)
+# Start backend (uvicorn)
 log "Starting backend (uvicorn)..."
 nohup python -m uvicorn main:app --host 0.0.0.0 --port 8000 >/var/log/foi/backend.out 2>&1 &
 
-# Frontend build
-cd /opt/foi-archive/appsrc/frontend
-if [[ -f package-lock.json ]]; then npm ci >/dev/null; else npm install >/dev/null; fi
-npm run build >/dev/null
-mkdir -p /var/www/html
-cp -r dist/* /var/www/html/
-chown -R www-data:www-data /var/www/html
+# Serve static site
+rsync -az --delete /opt/foi-archive/site/ /var/www/community/
+chown -R www-data:www-data /var/www/community
 
 # Nginx reverse proxy
-if [[ ! -f /etc/nginx/sites-available/foi-archive ]]; then
-  log "Configuring nginx..."
-  cat > /etc/nginx/sites-available/foi-archive <<'NGINX'
+log "Configuring nginx..."
+cat > /etc/nginx/sites-available/community-haqnow <<'NGINX'
 server {
     listen 80;
-    server_name _;
-    client_max_body_size 100M;
+    server_name community.haqnow.com;
+    client_max_body_size 200M;
 
     location / {
-        root /var/www/html;
+        root /var/www/community;
         try_files $uri /index.html;
     }
 
@@ -138,9 +138,8 @@ server {
     }
 }
 NGINX
-  ln -sf /etc/nginx/sites-available/foi-archive /etc/nginx/sites-enabled/foi-archive
-  rm -f /etc/nginx/sites-enabled/default || true
-fi
+ln -sf /etc/nginx/sites-available/community-haqnow /etc/nginx/sites-enabled/community-haqnow
+rm -f /etc/nginx/sites-enabled/default || true
 
 nginx -t
 systemctl enable nginx || true
