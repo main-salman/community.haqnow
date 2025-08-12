@@ -42,3 +42,43 @@ scripts/deploy.sh <SERVER_IP>
 Notes:
 - The deploy script currently uses the `haqnow` codebase as a baseline on the server to stand up backend/frontend quickly.
 - Swap to your own app code by adjusting `scripts/deploy.sh` clone section.
+
+## Architecture
+
+```
++----------------------+           +-------------------------+
+|  Developer Laptop    |           |    GitHub Repository    |
+|  - README, infra     |           |  main-salman/community. |
+|  - scripts/deploy.sh |  push     |  haqnow (this repo)     |
++----------+-----------+---------->+-----------+-------------+
+           |                                   |
+           | make/apply (Terraform)            |
+           v                                   |
++----------+-----------------------------------v-------------------------+
+|                         Exoscale (ch-dk-2)                              |
+|                                                                         |
+|  +------------------------+       +------------------------+             |
+|  | Exoscale Compute VM    |       | Exoscale DBaaS         |             |
+|  | (Ubuntu)               |       | - MySQL (auth/app)     |             |
+|  | Public IP: 194.182...  |       | - Postgres (RAG)       |             |
+|  |                        |       | ip_filter: VM /32      |             |
+|  |  /opt/foi-archive      |       +------------------------+             |
+|  |   ├── .env (secrets)   |                                                |
+|  |   ├── site/ (static)   |        +-------------------------+            |
+|  |   └── appsrc/backend   |        | Exoscale SOS (S3 API)   |            |
+|  |                        |        | - Bucket: community-... |            |
+|  |  Processes:            |        | - Public file URLs      |            |
+|  |   - nginx :80          |        +-----------+-------------+            |
+|  |     ├── /              |                    ^                          |
+|  |     |    -> /var/www/community (static)     |                          |
+|  |     ├── /health -> 127.0.0.1:8000/health    | s3_service (boto3)       |
+|  |     └── /api/  -> 127.0.0.1:8000/           |                          |
+|  |   - uvicorn community_app:app :8000         |                          |
+|  |                        |                    |                          |
+|  +------------------------+--------------------+--------------------------+
+```
+
+- Static site is independent and served from `/var/www/community`.
+- Minimal FastAPI `community_app.py` serves `/health` while full backend deps are added incrementally.
+- Secrets live only in `.env` on the VM and locally; `.gitignore` excludes them.
+- Terraform defines VM, security groups, and DBaaS; DB access is narrowed to the VM `/32`.
