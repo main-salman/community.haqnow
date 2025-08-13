@@ -784,7 +784,20 @@ async def redact_bytes(
             out_fd = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
             out_path = out_fd.name; out_fd.close()
             # Open directly from bytes to avoid tmp input management
-            doc = fitz.open(stream=raw, filetype="pdf")
+            try:
+                doc = fitz.open(stream=raw, filetype="pdf")
+            except Exception:
+                # Some Seahub raw links may return HTML; try to fetch via URL if provided as filename
+                try:
+                    import requests as _r
+                    if file and getattr(file, 'filename', None) and str(file.filename).startswith('http'):
+                        r = _r.get(file.filename, timeout=10)
+                        r.raise_for_status()
+                        doc = fitz.open(stream=r.content, filetype="pdf")
+                    else:
+                        raise
+                except Exception as ex:
+                    raise HTTPException(status_code=400, detail="Input is not a PDF")
             try:
                 for r in rect_list:
                     idx = max(0, int(r.page) - 1)

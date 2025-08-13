@@ -19,13 +19,21 @@
       return fetch(url, Object.assign({}, opts||{}, { headers }));
     }
 
-    function getFileUrl(){
-      // Seahub file page path contains /file/<name> with the actual file served in the iframe/pdf viewer
+    function getFileRawUrl(){
+      // Prefer explicit download/raw links rendered by Seahub
+      const dl1 = document.querySelector('a[href*="raw=1"], a[href*="?dl=1"], a[href*="&dl=1"]');
+      if (dl1 && dl1.href) return dl1.href;
+      // If PDF viewer iframe has ?file=<encoded-url> parameter, use that
       const iframe = document.querySelector('iframe');
-      if (iframe && iframe.src) return iframe.src;
-      // Fallback: try open file link
-      const dl = document.querySelector('a[href*="/file/"]');
-      return dl ? dl.href : location.href;
+      if (iframe && iframe.src) {
+        try { const u = new URL(iframe.src, location.origin); const f = u.searchParams.get('file'); if (f) return new URL(f, location.origin).toString(); } catch {}
+      }
+      // Fallback: force raw content via ?raw=1 on the current /lib/.../file/... path
+      if (location.pathname.includes('/lib/') && location.pathname.includes('/file/')) {
+        const rawUrl = location.origin + location.pathname + (location.search ? location.search + '&' : '?') + 'raw=1';
+        return rawUrl;
+      }
+      return location.href;
     }
 
     function ensureButton(){
@@ -76,8 +84,8 @@
       cancel.onclick = ()=>{ document.body.removeChild(overlay); document.body.removeChild(tb); };
       apply.onclick = async ()=>{
         try {
-          const url = getFileUrl();
-          const fileRes = await fetch(url, { credentials: 'include' });
+          const url = getFileRawUrl();
+          const fileRes = await fetch(url, { credentials: 'include', headers: { 'Accept': '*/*' } });
           const blob = await fileRes.blob();
           const fd = new FormData();
           fd.append('file', blob, 'file');
