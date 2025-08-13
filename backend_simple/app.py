@@ -319,6 +319,21 @@ class SeafileClient:
         
         return None
 
+    def update_file(self, repo_id: str, file_path: str, local_path: str) -> bool:
+        if not os.path.isfile(local_path):
+            return False
+        # Ensure leading slash for path
+        if not file_path.startswith("/"):
+            file_path = "/" + file_path
+        url = f"{self.base_url}/api2/repos/{repo_id}/file/"
+        params = {"p": file_path}
+        with open(local_path, "rb") as f:
+            files = {"file": (os.path.basename(local_path), f)}
+            resp = requests.put(url, headers=self._auth_headers(), params=params, files=files, timeout=30)
+            if resp.status_code in (200, 201):
+                return True
+        return False
+
 
 seafile_client = SeafileClient()
 
@@ -761,6 +776,9 @@ async def redact_bytes(
     page_pixels_h: Optional[str] = Form(None),
     page_canvas_w: Optional[str] = Form(None),
     page_canvas_h: Optional[str] = Form(None),
+    repo_id: Optional[str] = Form(None),
+    repo_path: Optional[str] = Form(None),
+    overwrite: Optional[str] = Form("true"),
     user: Dict[str, str] = Depends(get_current_user),
 ):
     try:
@@ -828,6 +846,13 @@ async def redact_bytes(
             finally:
                 try: doc.close()
                 except Exception: pass
+            # If repo info provided, overwrite file in Seafile, else return the file
+            if repo_id and repo_path and seafile_client.is_configured():
+                try:
+                    seafile_client.update_file(repo_id, repo_path, out_path)
+                    return JSONResponse({"ok": True})
+                except Exception:
+                    pass
             return FileResponse(out_path, filename=(file.filename or "redacted.pdf"))
         elif is_img:
             try:
@@ -840,6 +865,12 @@ async def redact_bytes(
                 out_fd = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
                 out_path = out_fd.name; out_fd.close()
                 img.save(out_path, format="PNG")
+                if repo_id and repo_path and seafile_client.is_configured():
+                    try:
+                        seafile_client.update_file(repo_id, repo_path, out_path)
+                        return JSONResponse({"ok": True})
+                    except Exception:
+                        pass
                 return FileResponse(out_path, filename=(file.filename or "redacted.png").rsplit('.',1)[0] + "_redacted.png")
             except Exception:
                 raise HTTPException(status_code=500, detail="Image redaction error")

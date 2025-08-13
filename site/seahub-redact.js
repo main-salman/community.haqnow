@@ -98,11 +98,22 @@
             fd.append('page_canvas_w', String(pdfCanvas.width||''));
             fd.append('page_canvas_h', String(pdfCanvas.height||''));
           }
+          // If we can infer repo/path from URL, overwrite in place on the server
+          try {
+            const m = location.pathname.match(/\/lib\/([^/]+)\/.*\/file\/(.+)$/);
+            if (m) {
+              fd.append('repo_id', m[1]);
+              fd.append('repo_path', '/' + decodeURIComponent(m[2]).replace(/^\/+/, ''));
+            }
+          } catch {}
           const res = await authedFetch('/community-api/redact-bytes', { method:'POST', body: fd });
           if (!res.ok) { const t = await res.text(); alert('Redaction failed: ' + t.slice(0,180)); return; }
-          const out = await res.blob();
-          const dl = URL.createObjectURL(out);
-          const a = document.createElement('a'); a.href=dl; a.download='redacted'; a.click(); URL.revokeObjectURL(dl);
+          const ct = res.headers.get('Content-Type') || '';
+          if (/application\/(pdf|octet-stream|png)/i.test(ct)) {
+            const out = await res.blob();
+            const dl = URL.createObjectURL(out);
+            const a = document.createElement('a'); a.href=dl; a.download='redacted'; a.click(); URL.revokeObjectURL(dl);
+          }
           cancel.onclick();
         } catch (e) { console.error(e); alert('Redaction error'); }
       };
