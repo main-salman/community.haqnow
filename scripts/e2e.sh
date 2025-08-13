@@ -4,7 +4,7 @@ set -euo pipefail
 ADMIN_EMAIL="${ADMIN_EMAIL:-salman.naqvi@gmail.com}"
 ADMIN_PASS="${ADMIN_PASS:-adslkj2390sadslkjALKJA9A*}"
 SEAFILE_API="http://localhost:9002/api2"
-API="http://localhost:8000/api"
+API="http://localhost:8000/community-api"
 
 echo "[e2e] Getting Seafile token..."
 TOKEN=$(curl -sf -X POST "$SEAFILE_API/auth-token/" -d "username=${ADMIN_EMAIL}&password=${ADMIN_PASS}" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("token",""))')

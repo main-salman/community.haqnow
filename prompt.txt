@@ -1,3 +1,6 @@
+New prompt:
+User should be able to redact PDF documents. All documents that are uploaded should turn into PDFs, including images. All documents that are uploaded should be OCR. The documents that are not in English should be translated to English. User should be able to redact documents using GUI and export sections of the document in PDF VIA GUI. Users should be able to ask questions about the document using AI (with RAG and Ollama behind the scenes) and also be able to search documents by words and phrases. Implement and test all of these features and ask me 10 questions before proceeding.
+
 Prompt for cursor:
 	- Create a platform called community.haqnow.com
 		○ Users should be able to upload hundreds or thousands of documents at once

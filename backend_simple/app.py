@@ -13,7 +13,13 @@ from PIL import Image
 from PIL import ImageDraw
 import pytesseract
 from langdetect import detect
-from googletrans import Translator
+# Offline translation (preferred). Falls back to no-translate if unavailable
+try:
+    from argostranslate import package as argos_package  # type: ignore
+    from argostranslate import translate as argos_translate  # type: ignore
+except Exception:
+    argos_package = None  # type: ignore
+    argos_translate = None  # type: ignore
 from pydantic import BaseModel, EmailStr
 from datetime import datetime, timedelta
 import bcrypt
@@ -21,6 +27,7 @@ import jwt
 from PyPDF2 import PdfReader, PdfWriter
 import fitz  # PyMuPDF
 import pyotp
+import subprocess
 import requests
 
 DB_PATH = os.environ.get("COMMUNITY_DB", "/opt/foi-archive/community.db")
@@ -159,7 +166,27 @@ def init_db():
 
 
 init_db()
-translator = Translator()
+def translate_to_english_offline(text: str, detected_lang: Optional[str]) -> str:
+    if not text:
+        return text
+    try:
+        if detected_lang and detected_lang.lower().startswith("en"):
+            return text
+        if argos_translate is None or argos_package is None:
+            return text
+        # Find matching installed languages
+        from_lang_code = (detected_lang or "").split("-")[0] or "auto"
+        # Argos doesn't support "auto"; try best effort map
+        if from_lang_code == "auto":
+            from_lang_code = "en"
+        available_from = [l for l in argos_translate.get_installed_languages() if l.code == from_lang_code]
+        available_to = [l for l in argos_translate.get_installed_languages() if l.code == "en"]
+        if not available_from or not available_to:
+            return text
+        translator = available_from[0].get_translation(available_to[0])
+        return translator.translate(text)
+    except Exception:
+        return text
 
 # Optional semantic search (pgvector). Safe to import lazily if not configured.
 try:
@@ -214,7 +241,7 @@ ensure_pg_schema()
 def ocr_image(data: bytes) -> str:
     image = Image.open(io.BytesIO(data)).convert("RGB")
     # Use multiple languages to improve coverage
-    text = pytesseract.image_to_string(image, lang=os.environ.get("TESS_LANGS", "eng+ara+rus+fra"))
+    text = pytesseract.image_to_string(image, lang=os.environ.get("TESS_LANGS", "eng"))
     return text.strip()
 
 
@@ -238,6 +265,85 @@ def strip_metadata_pdf(input_path: str, output_path: str) -> None:
     writer.remove_metadata()
     with open(output_path, "wb") as f:
         writer.write(f)
+
+
+def ocr_pdf(input_pdf_path: str) -> str:
+    try:
+        doc = fitz.open(input_pdf_path)
+    except Exception:
+        return ""
+    texts: List[str] = []
+    tess_langs = os.environ.get("TESS_LANGS", "eng")
+    try:
+        for page in doc:
+            # Render page at 200 DPI for better OCR accuracy
+            pix = page.get_pixmap(dpi=200)
+            mode = "RGBA" if pix.alpha else "RGB"
+            img = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
+            if mode == "RGBA":
+                img = img.convert("RGB")
+            t = pytesseract.image_to_string(img, lang=tess_langs)
+            if t and t.strip():
+                texts.append(t.strip())
+    finally:
+        try:
+            doc.close()
+        except Exception:
+            pass
+    return "\n\n".join(texts).strip()
+
+
+def ensure_pdf_canonical(input_path: str, original_filename: str, dest_dir: str) -> str:
+    """Convert any supported file (images, office, existing pdf) to a sanitized PDF.
+    Returns path to canonical PDF in dest_dir. Removes metadata for PDFs.
+    """
+    name_no_ext = os.path.splitext(sanitize_filename(os.path.basename(original_filename)))[0]
+    out_pdf_path = os.path.join(dest_dir, f"{name_no_ext}.pdf")
+    lowered = original_filename.lower()
+    # If it's already a PDF, re-write to strip metadata
+    if lowered.endswith(".pdf"):
+        tmp_out = out_pdf_path + ".tmp.pdf"
+        strip_metadata_pdf(input_path, tmp_out)
+        os.replace(tmp_out, out_pdf_path)
+        return out_pdf_path
+    # If it's an image, write a fresh PDF
+    if lowered.endswith((".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp")):
+        with Image.open(input_path).convert("RGB") as img:
+            img.save(out_pdf_path, format="PDF")
+        return out_pdf_path
+    # Otherwise, attempt LibreOffice headless conversion
+    try:
+        with tempfile.TemporaryDirectory() as tdir:
+            # Copy input file into temp to avoid LO issues with spaces/perm
+            base = os.path.basename(input_path)
+            temp_src = os.path.join(tdir, base)
+            with open(input_path, "rb") as src, open(temp_src, "wb") as dst:
+                dst.write(src.read())
+            cmd = [
+                "soffice",
+                "--headless",
+                "--nolockcheck",
+                "--norestore",
+                "--nodefault",
+                "--invisible",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                tdir,
+                temp_src,
+            ]
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+            if proc.returncode == 0:
+                # Find resulting PDF (LibreOffice names it with .pdf extension)
+                for fn in os.listdir(tdir):
+                    if fn.lower().endswith(".pdf"):
+                        src_pdf = os.path.join(tdir, fn)
+                        strip_metadata_pdf(src_pdf, out_pdf_path)
+                        return out_pdf_path
+    except Exception:
+        pass
+    # As a last resort, fail with unsupported
+    raise HTTPException(status_code=415, detail="Unsupported file type for conversion to PDF")
 
 
 # ==================== Seafile Integration ====================
@@ -368,7 +474,7 @@ def create_access_token(email: str, role: str, expires_minutes: int = 60 * 24) -
 
 
 def get_current_user(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Dict[str, str]:
-    # Accept both Authorization: Bearer <jwt> and Authorization: Token <seafile>
+    # Seafile-only auth
     header = request.headers.get("authorization") or ""
     scheme = ""
     token = ""
@@ -380,9 +486,9 @@ def get_current_user(request: Request, credentials: Optional[HTTPAuthorizationCr
         if len(parts) == 2:
             scheme = parts[0].lower()
             token = parts[1]
-    # Support Seafile tokens via Authorization: Token <token>
-    if scheme == "token":
-        base_url = os.environ.get("SEAFILE_BASE_URL", "http://localhost:9002")
+    base_url = os.environ.get("SEAFILE_BASE_URL", "http://localhost:9002")
+    # Prefer Authorization: Token <seafile>
+    if scheme == "token" and token:
         try:
             resp = requests.get(
                 f"{base_url}/api2/account/info/",
@@ -392,17 +498,14 @@ def get_current_user(request: Request, credentials: Optional[HTTPAuthorizationCr
             if resp.status_code == 200:
                 info = resp.json()
                 email = info.get("email") or info.get("user") or "unknown@local"
-                # Map Seafile users to viewer by default; admin mapping can be extended later
                 return {"id": email, "email": email, "role": "viewer"}
         except Exception:
             pass
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Seafile token")
-
-    # Fallback: accept Seahub session cookies (same domain) and validate against Seafile
+    # Or rely on Seahub session cookies
     try:
         cookie_header = request.headers.get("cookie") or request.headers.get("Cookie")
         if cookie_header:
-            base_url = os.environ.get("SEAFILE_BASE_URL", "http://localhost:9002")
             resp = requests.get(
                 f"{base_url}/api2/account/info/",
                 headers={"Cookie": cookie_header},
@@ -414,22 +517,7 @@ def get_current_user(request: Request, credentials: Optional[HTTPAuthorizationCr
                 return {"id": email, "email": email, "role": "viewer"}
     except Exception:
         pass
-
-    # Backward-compatible JWT via Authorization: Bearer <token>
-    try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        email = payload.get("sub")
-        role = payload.get("role")
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-    if not email:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-    conn = get_db()
-    row = conn.execute("SELECT id, email, role FROM users WHERE email = ?", (email,)).fetchone()
-    conn.close()
-    if not row:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
-    return {"id": str(row[0]), "email": row[1], "role": row[2]}
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized (Seafile auth required)")
 
 
 def require_admin(user: Dict[str, str] = Depends(get_current_user)) -> Dict[str, str]:
@@ -449,50 +537,45 @@ async def upload(files: List[UploadFile] = File(...), user: Dict[str, str] = Dep
     conn = get_db()
     cur = conn.cursor()
     for f in files:
-        content = await f.read()
-        # Save original file
-        safe_name = sanitize_filename(f.filename)
-        save_path = os.path.join(DATA_DIR, safe_name)
-        with open(save_path, "wb") as out:
-            out.write(content)
-        # Strip metadata and normalize formats
+        raw = await f.read()
+        # Persist incoming file to temp for conversion
+        with tempfile.NamedTemporaryFile(delete=False) as tmp_in:
+            tmp_in.write(raw)
+            tmp_in_path = tmp_in.name
+        # Convert everything to a canonical PDF and keep only that
         try:
-            lowered = safe_name.lower()
-            if lowered.endswith((".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp")):
-                content = strip_metadata_image(content)
-                with open(save_path, "wb") as out:
-                    out.write(content)
-            elif lowered.endswith(".pdf"):
-                tmp_path = save_path + ".clean.pdf"
-                strip_metadata_pdf(save_path, tmp_path)
-                os.replace(tmp_path, save_path)
-        except Exception:
-            pass
-        # Optionally push to Seafile (best-effort, non-blocking)
+            canonical_pdf_path = ensure_pdf_canonical(tmp_in_path, f.filename, DATA_DIR)
+        finally:
+            try:
+                os.unlink(tmp_in_path)
+            except Exception:
+                pass
+        # Ensure we keep only the new PDF, and use its sanitized name as the stored filename
+        stored_filename = os.path.basename(canonical_pdf_path)
+        # Best-effort upload canonical PDF to Seafile
         try:
             if seafile_client.is_configured():
-                seafile_client.upload_file(save_path, "/uploads/")
+                seafile_client.upload_file(canonical_pdf_path, "/uploads/")
         except Exception:
             pass
 
-        # OCR
+        # OCR the PDF (always OCR)
         try:
-            text = ocr_image(content)
-        except Exception as e:
+            text = ocr_pdf(canonical_pdf_path)
+        except Exception:
             text = ""
-        # Detect language and translate to English
+        # Detect language and translate to English using offline translator if available
         lang: Optional[str] = None
         translated: str = text
         try:
             if text:
                 lang = detect(text)
-                if lang and lang != "en":
-                    translated = translator.translate(text, src=lang, dest="en").text
+                translated = translate_to_english_offline(text, lang)
         except Exception:
             pass
         cur.execute(
             "INSERT INTO docs(filename, lang, text, translated) VALUES(?,?,?,?)",
-            (f.filename, lang or "unknown", text, translated),
+            (stored_filename, lang or "unknown", text, translated),
         )
         doc_id = cur.lastrowid
         results.append({"id": doc_id, "filename": f.filename, "lang": lang or "unknown"})
@@ -847,12 +930,12 @@ async def redact_bytes(
                 try: doc.close()
                 except Exception: pass
             # If repo info provided, overwrite file in Seafile, else return the file
-            if repo_id and repo_path and seafile_client.is_configured():
-                try:
-                    seafile_client.update_file(repo_id, repo_path, out_path)
-                    return JSONResponse({"ok": True})
-                except Exception:
-                    pass
+            # Never overwrite originals; always return or upload as a new file
+            try:
+                if seafile_client.is_configured():
+                    seafile_client.upload_file(out_path, "/redacted/")
+            except Exception:
+                pass
             return FileResponse(out_path, filename=(file.filename or "redacted.pdf"))
         elif is_img:
             try:
@@ -865,12 +948,11 @@ async def redact_bytes(
                 out_fd = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
                 out_path = out_fd.name; out_fd.close()
                 img.save(out_path, format="PNG")
-                if repo_id and repo_path and seafile_client.is_configured():
-                    try:
-                        seafile_client.update_file(repo_id, repo_path, out_path)
-                        return JSONResponse({"ok": True})
-                    except Exception:
-                        pass
+                try:
+                    if seafile_client.is_configured():
+                        seafile_client.upload_file(out_path, "/redacted/")
+                except Exception:
+                    pass
                 return FileResponse(out_path, filename=(file.filename or "redacted.png").rsplit('.',1)[0] + "_redacted.png")
             except Exception:
                 raise HTTPException(status_code=500, detail="Image redaction error")
@@ -936,7 +1018,7 @@ async def delete_highlight(doc_id: int, highlight_id: int, user: Dict[str, str] 
     conn.commit(); conn.close()
     return {"ok": True}
 
-# Simple Q&A using FTS snippets as grounded answer
+# RAG Q&A with Ollama generation (fallback to FTS snippets)
 class QARequest(BaseModel):
     question: str
 
@@ -946,8 +1028,10 @@ async def qa(body: QARequest, user: Dict[str, str] = Depends(get_current_user)):
     q = body.question.strip()
     if not q:
         raise HTTPException(status_code=422, detail="Empty question")
-    # Prefer semantic if available
+    # Retrieve relevant docs via pgvector if available, else FTS
+    contexts: List[Dict[str, str]] = []
     pg = get_pg_conn()
+    used_pg = False
     if pg is not None:
         try:
             model = get_embedder()
@@ -955,24 +1039,68 @@ async def qa(body: QARequest, user: Dict[str, str] = Depends(get_current_user)):
             qvec = np.asarray(qvec, dtype=np.float32)
             with pg.cursor() as pc:
                 pc.execute(
-                    "SELECT doc_id, filename FROM doc_embeddings ORDER BY embedding <-> %s LIMIT 5",
+                    "SELECT d.id, d.filename FROM doc_embeddings e JOIN docs d ON d.id = e.doc_id ORDER BY e.embedding <-> %s LIMIT 5",
                     (qvec.tolist(),),
                 )
-                rows = pc.fetchall()
-            pg.close()
-            return {"answers": [{"doc_id": r[0], "filename": r[1]} for r in rows]}
+                vec_rows = pc.fetchall()
+            used_pg = True
+            for did, fname in vec_rows:
+                contexts.append({"doc_id": str(did), "filename": str(fname)})
         except Exception:
             pass
-    # Fallback to FTS
+        finally:
+            try:
+                pg.close()
+            except Exception:
+                pass
+    if not contexts:
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT d.id, d.filename, snippet(docs_fts, 1, '[', ']', ' … ', 12) as snip_text, snippet(docs_fts, 2, '[', ']', ' … ', 12) as snip_trans FROM docs_fts JOIN docs d ON d.id = docs_fts.rowid WHERE docs_fts MATCH ? LIMIT 5",
+            (q,),
+        ).fetchall()
+        conn.close()
+        for r in rows:
+            contexts.append({"doc_id": str(r[0]), "filename": str(r[1]), "snippet_text": r[2] or "", "snippet_translated": r[3] or ""})
+
+    # Build context text from stored translated text
     conn = get_db()
-    rows = conn.execute(
-        "SELECT d.id, d.filename, snippet(docs_fts, 1, '[', ']', ' … ', 12) as snip_text, snippet(docs_fts, 2, '[', ']', ' … ', 12) as snip_trans FROM docs_fts JOIN docs d ON d.id = docs_fts.rowid WHERE docs_fts MATCH ? LIMIT 5",
-        (q,),
-    ).fetchall()
+    snippets: List[str] = []
+    for c in contexts:
+        try:
+            row = conn.execute("SELECT translated FROM docs WHERE id = ?", (int(c["doc_id"]),)).fetchone()
+            if row and row[0]:
+                snippets.append(row[0])
+        except Exception:
+            continue
     conn.close()
-    return {"answers": [
-        {"doc_id": r[0], "filename": r[1], "snippet_text": r[2], "snippet_translated": r[3]} for r in rows
-    ]}
+
+    ollama_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+    ollama_model = os.environ.get("OLLAMA_MODEL", "llama3")
+    answer_text = None
+    try:
+        import requests as _rq
+        context_text = "\n\n".join(snippets)[:15000]
+        prompt = (
+            "You are answering questions grounded strictly in the provided context.\n"
+            "If the answer is not contained in the context, say you don't know.\n\n"
+            f"Question: {q}\n\nContext:\n{context_text}\n\nAnswer:"
+        )
+        resp = _rq.post(
+            f"{ollama_host}/api/generate",
+            json={"model": ollama_model, "prompt": prompt, "stream": False},
+            timeout=60,
+        )
+        if resp.status_code == 200:
+            js = resp.json()
+            answer_text = js.get("response") or js.get("data") or None
+    except Exception:
+        answer_text = None
+
+    if answer_text:
+        return {"answer": answer_text, "sources": contexts[:5]}
+    # Fallback: return retrieved contexts/snippets only
+    return {"answer": None, "sources": contexts[:5]}
 
 
 @app.get("/community-api/search/semantic")
@@ -1066,8 +1194,8 @@ async def login(body: LoginRequest):
         totp = pyotp.TOTP(mfa_secret)
         if not totp.verify(body.otp_code, valid_window=1):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid OTP code")
-    token = create_access_token(email=email, role=role)
-    return {"access_token": token, "token_type": "bearer"}
+    # Disable JWT issuance; Seafile-only auth in this deployment
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="JWT disabled. Use Seafile authentication.")
 
 
 @app.get("/community-api/auth/me")

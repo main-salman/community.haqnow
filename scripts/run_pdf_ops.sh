@@ -3,7 +3,7 @@ set -euo pipefail
 
 ADMIN_EMAIL="${ADMIN_EMAIL:-salman.naqvi@gmail.com}"
 ADMIN_PASS="${ADMIN_PASS:-adslkj2390sadslkjALKJA9A*}"
-API="http://localhost:8000/api"
+API="http://localhost:8000/community-api"
 SEAF="http://localhost:9002/api2"
 DID="${1:-1}"
 

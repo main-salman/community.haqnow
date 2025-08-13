@@ -91,13 +91,13 @@ rsync -az --delete /opt/foi-archive/src/site/ /opt/foi-archive/site/
 rsync -az --delete /opt/foi-archive/src/backend_simple/ /opt/foi-archive/backend_simple/
 
 # Prepare API Dockerfile (build once; faster restarts)
-cat > /opt/foi-archive/backend_simple/Dockerfile.api <<'EOF'
+  cat > /opt/foi-archive/backend_simple/Dockerfile.api <<'EOF'
 FROM python:3.11-slim
 ENV PIP_NO_CACHE_DIR=1 PYTHONDONTWRITEBYTECODE=1
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       tesseract-ocr tesseract-ocr-ara tesseract-ocr-rus tesseract-ocr-fra \
-      poppler-utils libgl1 libglib2.0-0 curl && \
+      poppler-utils libgl1 libglib2.0-0 curl libreoffice fonts-dejavu-core xz-utils && \
     rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY requirements.txt /app/requirements.txt
@@ -114,7 +114,6 @@ fastapi
 uvicorn
 pillow
 pytesseract
-googletrans==3.1.0a0
 langdetect
 PyJWT
 bcrypt
@@ -127,6 +126,7 @@ sentence-transformers
 psycopg2-binary
 pyotp
 requests
+argostranslate
 EOF
 fi
 
@@ -193,6 +193,8 @@ services:
       - SEAFILE_BASE_URL=http://seafile
       - SEAFILE_ADMIN_EMAIL=${admin_email}
       - SEAFILE_ADMIN_PASSWORD=${admin_password}
+      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_MODEL=llama3
     ports:
       - "8000:8000"
     healthcheck:
@@ -201,9 +203,27 @@ services:
       timeout: 5s
       retries: 30
       start_period: 60s
+    depends_on:
+      - seafile
+      - ollama
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/version"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
 volumes:
   seafile_data: {}
   db_data: {}
+  ollama_data: {}
 EOF
 
 # Nginx reverse proxy for Seahub, OnlyOffice, and API

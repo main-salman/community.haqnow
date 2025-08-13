@@ -107,19 +107,17 @@
     </main>
 
     <script>
-      const token = localStorage.getItem('token');
+      const token = null;
       const errorBox = document.getElementById('error');
       const uploadMsg = document.getElementById('uploadMsg');
 
-      function ensureAuth() {
-        if (!token) { window.location.href = '/login.html'; return false; }
-        return true;
-      }
+      function ensureAuth() { return true; }
 
       async function authed(url, options = {}) {
-        const headers = Object.assign({}, options.headers || {}, { 'Authorization': 'Bearer ' + (localStorage.getItem('token') || '') });
-        const res = await fetch(url, Object.assign({}, options, { headers }));
-        if (res.status === 401) { window.location.href = '/login.html'; throw new Error('Unauthorized'); }
+        const headers = Object.assign({}, options.headers || {});
+        const opts = Object.assign({}, options, { headers, credentials: 'include' });
+        const res = await fetch(url, opts);
+        if (res.status === 401) { throw new Error('Unauthorized'); }
         return res;
       }
 
@@ -265,7 +263,13 @@
         try {
           const res = await authed('/community-api/qa', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question: q })});
           const data = await jsonRes(res);
-          out.textContent = `Answers: ${JSON.stringify(data.answers || [])}`;
+          if (data.answer) {
+            out.textContent = `Answer: ${data.answer}`;
+          } else if (data.answers) {
+            out.textContent = `Answers: ${JSON.stringify(data.answers)}`;
+          } else {
+            out.textContent = `Sources: ${JSON.stringify(data.sources || [])}`;
+          }
         } catch (e) { errorBox.textContent = e.message; }
       });
 

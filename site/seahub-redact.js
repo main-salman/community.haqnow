@@ -1,6 +1,6 @@
 (function(){
   try {
-    const token = localStorage.getItem('token') || '';
+    const token = '';
     function h(tag, props, ...kids){ const el = document.createElement(tag); Object.assign(el, props||{}); kids.forEach(k => el.appendChild(typeof k==='string'?document.createTextNode(k):k)); return el; }
     function style(css){ const s = document.createElement('style'); s.textContent = css; document.head.appendChild(s); }
     style(`
@@ -12,8 +12,7 @@
     `);
 
     function authedFetch(url, opts){
-      const headers = Object.assign({}, (opts && opts.headers)||{}, token ? { 'Authorization':'Bearer '+token } : {});
-      // Always include cookies so Seahub session can authorize
+      const headers = Object.assign({}, (opts && opts.headers)||{});
       if (!opts) opts = {};
       opts.credentials = 'include';
       return fetch(url, Object.assign({}, opts||{}, { headers }));

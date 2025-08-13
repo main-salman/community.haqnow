@@ -98,3 +98,21 @@
 - Mount `seahub-data/custom` from host via docker-compose: `/opt/foi-archive/seahub-custom` -> `/shared/seafile/seahub-data/custom`.
 - Remove Nginx `sub_filter` injector; assets will be served by Seahub custom path.
 - Left the same JS (`site/seahub-redact.js`) to be installed into custom dir at deploy.
+
+2025-08-13 14:20 UTC — Implement canonical-PDF ingest, always-OCR, offline translation, pgvector RAG, Seafile-only auth.
+- Backend (`backend_simple/app.py`):
+  - Convert all uploads (images, Office via LibreOffice headless, PDFs) into a sanitized canonical PDF; keep only the new PDF. Added `ensure_pdf_canonical`, `ocr_pdf`, and tightened `strip_metadata_pdf` usage.
+  - Always OCR PDFs with Tesseract (default `TESS_LANGS=eng`), detect language, and translate to English via Argos Translate offline when available.
+  - Maintain FTS5 and pgvector embeddings; RAG Q&A now retrieves with pgvector and generates answers via Ollama (`OLLAMA_HOST`, `OLLAMA_MODEL`). Falls back to returning sources if generation unavailable.
+  - Enforce Seafile-only auth: removed JWT fallback in `get_current_user`; `/community-api/auth/login` now disabled (403).
+  - Redaction endpoints return new files and upload to `/redacted/`; never overwrite originals.
+- Seahub overlay client (`site/seahub-redact.js`): stop using Bearer token; rely on cookies for auth.
+- e2e (`scripts/e2e.sh`): uses Seafile token for API calls; exercises upload, search, semantic search, redaction, export.
+- Notes: Ensure `soffice` and Tesseract with required languages are installed on the server for Office-to-PDF and OCR.
+
+2025-08-13 14:40 UTC — Updated deployment to install runtime deps and run Ollama.
+- `scripts/deploy.sh` now:
+  - Installs LibreOffice in API container for Office→PDF conversion, adds Argos Translate, and mounts Seahub custom JS.
+  - Adds Ollama service and sets `OLLAMA_HOST`/`OLLAMA_MODEL` for backend.
+  - Keeps API under `/community-api/` via nginx; injects `custom.js` into Seahub.
+- Updated test scripts (`scripts/e2e.sh`, `scripts/run_pdf_test.sh`, `scripts/run_pdf_ops.sh`) to use `/community-api` base path.
