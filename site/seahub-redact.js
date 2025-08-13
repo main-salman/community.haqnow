@@ -37,25 +37,36 @@
       return location.href;
     }
 
+    function findPrintButton(){
+      // common selectors across Seahub versions
+      const candidates = document.querySelectorAll('[title="Print"], [aria-label="Print"], .sf2-icon-print, .icon-print');
+      let best = null;
+      candidates.forEach(el => { if (!best) best = el; });
+      return best;
+    }
+
     function ensureButton(){
       if (!(location.pathname.includes('/lib/') && location.pathname.includes('/file/'))) return;
       if (document.querySelector('.hn-redact-btn')) return;
       // Try to place inside Seahub toolbar if present
       const toolbar = document.querySelector('.view-file-op, .file-op, .pdf-op, header .operations, header .d-flex, header');
       const btn = h('button',{className:'hn-redact-btn',innerText:'Redact', title:'Draw boxes to redact'});
-      if (toolbar) {
-        btn.classList.add('toolbar');
-        const printBtn = document.querySelector('[title="Print"], [aria-label="Print"], .sf2-icon-print, .icon-print');
-        if (printBtn && printBtn.parentElement === toolbar) {
-          toolbar.insertBefore(btn, printBtn);
-        } else if (toolbar.firstChild) {
-          toolbar.insertBefore(btn, toolbar.firstChild);
-        } else {
-          toolbar.appendChild(btn);
-        }
-      } else {
-        document.body.appendChild(btn);
+      document.body.appendChild(btn);
+      // Try to anchor visually to the left of the Print button even if DOM structure varies
+      function placeNextToPrint(){
+        const p = findPrintButton();
+        if (!p) return;
+        const r = p.getBoundingClientRect();
+        const b = btn.getBoundingClientRect();
+        btn.style.position = 'fixed';
+        btn.style.zIndex = 10000;
+        btn.style.top = Math.max(8, Math.round(r.top + (r.height - b.height) / 2)) + 'px';
+        btn.style.left = Math.max(8, Math.round(r.left - (b.width + 8))) + 'px';
       }
+      placeNextToPrint();
+      window.addEventListener('resize', placeNextToPrint);
+      const obs = new MutationObserver(placeNextToPrint);
+      obs.observe(document.body, { subtree: true, attributes: true, childList: true });
       btn.addEventListener('click', openOverlay);
     }
 
@@ -127,6 +138,19 @@
             const dl = URL.createObjectURL(out);
             const a = document.createElement('a'); a.href=dl; a.download='redacted'; a.click(); URL.revokeObjectURL(dl);
           }
+          // Force viewer refresh to pick up the updated file
+          try {
+            const iframe = document.querySelector('iframe');
+            if (iframe && iframe.src) {
+              const u = new URL(iframe.src, location.origin);
+              u.searchParams.set('v', String(Date.now()));
+              iframe.src = u.toString();
+            } else {
+              const u = new URL(location.href);
+              u.searchParams.set('v', String(Date.now()));
+              window.location.href = u.toString();
+            }
+          } catch {}
           cancel.onclick();
         } catch (e) { console.error(e); alert('Redaction error'); }
       };
