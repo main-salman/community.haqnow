@@ -835,12 +835,15 @@ async def redact_bytes(
     except HTTPException:
         raise
     except Exception as e:
-        # Include exception name for client, and log to server stdout
+        # Include exception name and message for client (trimmed), and log to server stdout
         try:
             print("[redact-bytes] error:", repr(e))
         except Exception:
             pass
-        raise HTTPException(status_code=500, detail=f"Redaction error: {type(e).__name__}")
+        msg = str(e)
+        if len(msg) > 200:
+            msg = msg[:200]
+        raise HTTPException(status_code=500, detail=f"Redaction error: {type(e).__name__}: {msg}")
 
 
 # Highlights
