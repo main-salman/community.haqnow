@@ -36,9 +36,21 @@
       return location.href;
     }
 
-    function findPrintButton(){
-      // common selectors across Seahub versions
-      const candidates = document.querySelectorAll('[title="Print"], [aria-label="Print"], .sf2-icon-print, .icon-print');
+    function getPdfIframe(){
+      const frames = Array.from(document.querySelectorAll('iframe'));
+      for (const fr of frames) {
+        try {
+          if (fr.src && /viewer\.html/i.test(fr.src)) return fr;
+          if (fr.contentDocument && fr.contentDocument.getElementById('toolbarViewerRight')) return fr;
+        } catch {}
+      }
+      return null;
+    }
+
+    function findPrintButton(root){
+      // Search within provided root (document or iframe document)
+      const sel = '#print, [title="Print"], [aria-label="Print"], .sf2-icon-print, .icon-print';
+      const candidates = (root || document).querySelectorAll(sel);
       let best = null;
       candidates.forEach(el => { if (!best) best = el; });
       return best;
@@ -47,9 +59,28 @@
     function ensureButton(){
       if (!(location.pathname.includes('/lib/') && location.pathname.includes('/file/'))) return;
       if (document.querySelector('.hn-redact-btn')) return;
-      // Try to place inside Seahub toolbar, cloning Print button for identical look & feel
+      // Prefer injecting into PDF.js toolbar inside iframe for reliability
+      const pdfIframe = getPdfIframe();
+      if (pdfIframe && pdfIframe.contentDocument) {
+        const idoc = pdfIframe.contentDocument;
+        const rightBar = idoc.querySelector('#toolbarViewerRight') || idoc.querySelector('#secondaryToolbar');
+        const printBtnI = findPrintButton(idoc);
+        if (rightBar) {
+          const b = idoc.createElement('button');
+          b.id = 'hnRedactBtn';
+          b.className = 'toolbarButton hn-redact-btn toolbar';
+          b.setAttribute('title','Redact');
+          b.setAttribute('aria-label','Redact');
+          b.textContent = 'Redact';
+          if (printBtnI && printBtnI.parentElement === rightBar) rightBar.insertBefore(b, printBtnI); else rightBar.insertBefore(b, rightBar.firstChild);
+          b.addEventListener('click', (e)=>{ e.preventDefault(); openOverlay(); });
+          return; // Done
+        }
+      }
+
+      // Fallback: Seahub toolbar in parent doc
       const toolbar = document.querySelector('.view-file-op, .file-op, .pdf-op, header .operations, header .d-flex, header');
-      const printBtn = findPrintButton();
+      const printBtn = findPrintButton(document);
       let btn;
       if (printBtn && toolbar) {
         btn = printBtn.cloneNode(false);
@@ -72,7 +103,9 @@
     }
 
     function getActivePdfCanvas(){
-      const canvases = Array.from(document.querySelectorAll('canvas'));
+      const pdfIframe = getPdfIframe();
+      const root = pdfIframe && pdfIframe.contentDocument ? pdfIframe.contentDocument : document;
+      const canvases = Array.from(root.querySelectorAll('canvas'));
       if (!canvases.length) return null;
       let best = null; let bestArea = 0; const vw = window.innerWidth, vh = window.innerHeight;
       for (const c of canvases) {
