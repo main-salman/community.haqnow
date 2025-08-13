@@ -133,6 +133,12 @@ fi
 cat > /opt/foi-archive/docker-compose.yml <<'EOF'
 version: '3.8'
 services:
+  openkm:
+    image: openkm/openkm-ce:latest
+    container_name: openkm
+    restart: unless-stopped
+    ports:
+      - "9080:8080"
   commapi:
     build:
       context: /opt/foi-archive/backend_simple
@@ -162,6 +168,7 @@ services:
       start_period: 60s
     depends_on:
       - ollama
+      - openkm
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
@@ -186,8 +193,24 @@ server {
     listen 80;
     server_name community.haqnow.com _;
     client_max_body_size 200M;
-    root /opt/foi-archive/site;
-    index index.html;
+    # Root and /openkm -> OpenKM UI
+    location /openkm/ {
+        proxy_pass http://localhost:9080/OpenKM/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location = /openkm {
+        return 301 /openkm/;
+    }
+    location / {
+        proxy_pass http://localhost:9080/OpenKM/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
     location /community-api/ {
         proxy_pass http://localhost:8000/community-api/;
         proxy_set_header Host $host;
