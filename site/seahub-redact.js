@@ -4,9 +4,8 @@
     function h(tag, props, ...kids){ const el = document.createElement(tag); Object.assign(el, props||{}); kids.forEach(k => el.appendChild(typeof k==='string'?document.createTextNode(k):k)); return el; }
     function style(css){ const s = document.createElement('style'); s.textContent = css; document.head.appendChild(s); }
     style(`
-      .hn-redact-btn{position:fixed;right:16px;top:16px;z-index:9999;padding:8px 12px;border-radius:8px;background:#111827;color:#fff;border:0;}
-      /* When placed into Seahub toolbar (flex), force it to the front */
-      .hn-redact-btn.toolbar{position:static;margin:0 8px 0 0;order:-1;}
+      .hn-redact-btn{ padding:4px 8px; border-radius:4px; cursor:pointer; }
+      .hn-redact-btn.toolbar{ margin:0 6px 0 0; }
       .hn-redact-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.1);z-index:9998;cursor:crosshair}
       .hn-redact-canvas{position:absolute;left:0;top:0;}
       .hn-redact-toolbar{position:fixed;left:16px;top:16px;z-index:9999;display:flex;gap:8px;}
@@ -48,26 +47,28 @@
     function ensureButton(){
       if (!(location.pathname.includes('/lib/') && location.pathname.includes('/file/'))) return;
       if (document.querySelector('.hn-redact-btn')) return;
-      // Try to place inside Seahub toolbar if present
+      // Try to place inside Seahub toolbar, cloning Print button for identical look & feel
       const toolbar = document.querySelector('.view-file-op, .file-op, .pdf-op, header .operations, header .d-flex, header');
-      const btn = h('button',{className:'hn-redact-btn',innerText:'Redact', title:'Draw boxes to redact'});
-      document.body.appendChild(btn);
-      // Try to anchor visually to the left of the Print button even if DOM structure varies
-      function placeNextToPrint(){
-        const p = findPrintButton();
-        if (!p) return;
-        const r = p.getBoundingClientRect();
-        const b = btn.getBoundingClientRect();
-        btn.style.position = 'fixed';
-        btn.style.zIndex = 10000;
-        btn.style.top = Math.max(8, Math.round(r.top + (r.height - b.height) / 2)) + 'px';
-        btn.style.left = Math.max(8, Math.round(r.left - (b.width + 8))) + 'px';
+      const printBtn = findPrintButton();
+      let btn;
+      if (printBtn && toolbar) {
+        btn = printBtn.cloneNode(false);
+        // Neutralize default navigation/print
+        btn.removeAttribute('href');
+        btn.setAttribute('href', '#');
+        btn.setAttribute('title', 'Redact');
+        btn.setAttribute('aria-label', 'Redact');
+        btn.classList.add('hn-redact-btn','toolbar');
+        btn.textContent = 'Redact';
+        toolbar.insertBefore(btn, printBtn);
+      } else if (toolbar) {
+        btn = h('button',{className:'hn-redact-btn toolbar',innerText:'Redact', title:'Redact'});
+        toolbar.insertBefore(btn, toolbar.firstChild || null);
+      } else {
+        btn = h('button',{className:'hn-redact-btn',innerText:'Redact', title:'Redact'});
+        document.body.appendChild(btn);
       }
-      placeNextToPrint();
-      window.addEventListener('resize', placeNextToPrint);
-      const obs = new MutationObserver(placeNextToPrint);
-      obs.observe(document.body, { subtree: true, attributes: true, childList: true });
-      btn.addEventListener('click', openOverlay);
+      btn.addEventListener('click', (e)=>{ e.preventDefault(); openOverlay(); });
     }
 
     function getActivePdfCanvas(){
