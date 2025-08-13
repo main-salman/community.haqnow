@@ -58,7 +58,7 @@ scp -o StrictHostKeyChecking=no "$PROJECT_ROOT/.env" root@"$SERVER_IP":/opt/foi-
 
 # Remote setup and deployment (non-docker)
 log "Provisioning Seafile + OnlyOffice + API docker-compose stack..."
-ssh -o StrictHostKeyChecking=no root@"$SERVER_IP" bash -s <<REMOTE3
+ssh -o StrictHostKeyChecking=no root@"$SERVER_IP" env REPO_URL="$REPO_URL" BRANCH="$BRANCH" bash -s <<'REMOTE3'
 set -euo pipefail
 log() { echo -e "[remote] $*"; }
 
@@ -73,8 +73,8 @@ fi
 
 # Ensure git installed and pull latest code from GitHub
 apt-get install -y git >/dev/null 2>&1 || true
-REPO_URL="$REPO_URL"
-BRANCH="$BRANCH"
+REPO_URL="${REPO_URL:-}"
+BRANCH="${BRANCH:-main}"
 if [[ ! -d /opt/foi-archive/src/.git ]]; then
   log "Cloning repo $REPO_URL (branch $BRANCH)..."
   rm -rf /opt/foi-archive/src
@@ -107,8 +107,6 @@ COPY . /app
 EXPOSE 8000
 CMD ["python","-m","uvicorn","app:app","--host","0.0.0.0","--port","8000"]
 EOF
-
-googletrans==3.1.0a0
 # Ensure requirements.txt exists for reproducible installs (prefer repo version; fallback to baseline)
 if [[ ! -f /opt/foi-archive/backend_simple/requirements.txt ]]; then
   cat > /opt/foi-archive/backend_simple/requirements.txt <<'EOF'
