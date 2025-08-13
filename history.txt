@@ -116,3 +116,16 @@
   - Adds Ollama service and sets `OLLAMA_HOST`/`OLLAMA_MODEL` for backend.
   - Keeps API under `/community-api/` via nginx; injects `custom.js` into Seahub.
 - Updated test scripts (`scripts/e2e.sh`, `scripts/run_pdf_test.sh`, `scripts/run_pdf_ops.sh`) to use `/community-api` base path.
+
+2025-08-13 18:00 UTC — Replace Seafile with OpenKM; switch API auth back to JWT.
+- Backend (`backend_simple/app.py`):
+  - Removed Seafile client and auth; added `OpenKMClient` using REST (`/services/rest/document/createSimple`, `checkin`).
+  - Uploads and redacted outputs are best-effort pushed into OpenKM under `/okm:root/Community`.
+  - Restored JWT login issuance; all endpoints use `Authorization: Bearer <token>`.
+- Frontend (`site/app.html`):
+  - Uses JWT bearer for all API calls; logout clears token.
+- Scripts:
+  - `scripts/e2e.sh`, `scripts/run_pdf_test.sh`, `scripts/run_pdf_ops.sh` now login via `/community-api/auth/login` and send Bearer tokens.
+- Deploy (`scripts/deploy.sh`):
+  - Removed Seafile/OnlyOffice services; Nginx now serves `site/` at `/` and proxies `/community-api/` to API. Kept Ollama.
+  - Added environment support for `OPENKM_*` to enable uploads to OpenKM if configured externally.

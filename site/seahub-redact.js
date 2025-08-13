@@ -8,7 +8,8 @@
       .hn-redact-btn.toolbar{ margin:0 6px 0 0; }
       .hn-redact-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.1);z-index:9998;cursor:crosshair}
       .hn-redact-canvas{position:absolute;left:0;top:0;}
-      .hn-redact-toolbar{position:fixed;left:16px;top:16px;z-index:9999;display:flex;gap:8px;}
+      .hn-redact-toolbar{position:fixed;left:16px;top:16px;z-index:2147480000;display:flex;gap:8px;}
+      .hn-redact-fab{position:fixed;right:16px;bottom:16px;z-index:2147480000;padding:10px 14px;border-radius:999px;background:#111827;color:#fff;border:0;}
     `);
 
     function authedFetch(url, opts){
@@ -56,8 +57,10 @@
     }
 
     function ensureButton(){
-      if (!(location.pathname.includes('/lib/') && location.pathname.includes('/file/'))) return;
       if (document.querySelector('.hn-redact-btn')) return;
+      // Only show when a PDF viewer iframe/canvas/object is present to reduce false positives
+      const hasViewer = !!(getPdfIframe() || document.querySelector('canvas, embed[type="application/pdf"], object[type="application/pdf"]'));
+      if (!hasViewer) return;
       // Prefer injecting into PDF.js toolbar inside iframe for reliability
       const pdfIframe = getPdfIframe();
       if (pdfIframe && pdfIframe.contentDocument) {
@@ -78,7 +81,7 @@
       }
 
       // Fallback: Seahub toolbar in parent doc
-      const toolbar = document.querySelector('.view-file-op, .file-op, .pdf-op, header .operations, header .d-flex, header');
+      const toolbar = document.querySelector('.view-file-op, .file-op, .pdf-op, header .operations, header .d-flex, header, .file-toolbar, .detail-toolbar, .sf-toolbar');
       const printBtn = findPrintButton(document);
       let btn;
       if (printBtn && toolbar) {
@@ -95,7 +98,7 @@
         btn = h('button',{className:'hn-redact-btn toolbar',innerText:'Redact', title:'Redact'});
         toolbar.insertBefore(btn, toolbar.firstChild || null);
       } else {
-        btn = h('button',{className:'hn-redact-btn',innerText:'Redact', title:'Redact'});
+        btn = h('button',{className:'hn-redact-btn hn-redact-fab',innerText:'Redact', title:'Redact'});
         document.body.appendChild(btn);
       }
       btn.addEventListener('click', (e)=>{ e.preventDefault(); openOverlay(); });
@@ -117,9 +120,18 @@
       return best;
     }
 
+    function getActivePdfHostRect(){
+      const pdfCanvas = getActivePdfCanvas();
+      if (pdfCanvas) return pdfCanvas.getBoundingClientRect();
+      // Fallback to <embed>/<object> PDF viewer element
+      const pdfObj = document.querySelector('embed[type="application/pdf"], object[type="application/pdf"], iframe.pdf-viewer');
+      if (pdfObj) return pdfObj.getBoundingClientRect();
+      return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+    }
+
     function openOverlay(){
       const pdfCanvas = getActivePdfCanvas();
-      const targetRect = pdfCanvas ? pdfCanvas.getBoundingClientRect() : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+      const targetRect = getActivePdfHostRect();
       const overlay = h('div',{className:'hn-redact-overlay'});
       const canvas = h('canvas',{className:'hn-redact-canvas'});
       overlay.appendChild(canvas);
@@ -154,6 +166,9 @@
             fd.append('page_pixels_h', String(pdfCanvas.getBoundingClientRect().height));
             fd.append('page_canvas_w', String(pdfCanvas.width||''));
             fd.append('page_canvas_h', String(pdfCanvas.height||''));
+          } else if (targetRect) {
+            fd.append('page_pixels_w', String(targetRect.width));
+            fd.append('page_pixels_h', String(targetRect.height));
           }
           // If we can infer repo/path from URL, overwrite in place on the server
           try {
@@ -191,8 +206,18 @@
 
     // Keep trying in case Seahub changes DOM after load
     ensureButton();
-    document.addEventListener('DOMContentLoaded', ensureButton);
+    function addFloating(){
+      if (document.querySelector('.hn-redact-fab')) return;
+      const btn = h('button',{className:'hn-redact-btn hn-redact-fab',innerText:'Redact', title:'Redact (R)'});
+      btn.addEventListener('click', (e)=>{ e.preventDefault(); openOverlay(); });
+      document.body.appendChild(btn);
+    }
+
+    document.addEventListener('DOMContentLoaded', ()=>{ try{console.log('[hn-redact] init');}catch(e){} addFloating(); ensureButton(); });
     setInterval(ensureButton, 1500);
+    try { new MutationObserver(() => ensureButton()).observe(document.documentElement, {childList:true,subtree:true}); } catch {}
+    try { window.addEventListener('keydown', (e)=>{ if ((e.key||'').toLowerCase()==='r') { e.preventDefault(); openOverlay(); } }); } catch {}
+    try { window.__hnRedactReady = '1.1'; } catch {}
     try { window.__hnRedactReady = true; } catch {}
   } catch {}
 })();

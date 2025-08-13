@@ -346,102 +346,72 @@ def ensure_pdf_canonical(input_path: str, original_filename: str, dest_dir: str)
     raise HTTPException(status_code=415, detail="Unsupported file type for conversion to PDF")
 
 
-# ==================== Seafile Integration ====================
-class SeafileClient:
+# ==================== OpenKM Integration ====================
+class OpenKMClient:
     def __init__(self) -> None:
-        self.base_url: str = os.environ.get("SEAFILE_BASE_URL", "").rstrip("/")
-        self.admin_email: Optional[str] = os.environ.get("SEAFILE_ADMIN_EMAIL")
-        self.admin_password: Optional[str] = os.environ.get("SEAFILE_ADMIN_PASSWORD")
-        self.repo_id: Optional[str] = os.environ.get("SEAFILE_REPO_ID")
-        self._token: Optional[str] = None
+        self.base_url: str = os.environ.get("OPENKM_BASE_URL", "").rstrip("/")
+        self.username: Optional[str] = os.environ.get("OPENKM_USERNAME")
+        self.password: Optional[str] = os.environ.get("OPENKM_PASSWORD")
+        # Default destination folder in OpenKM repository
+        self.upload_root: str = os.environ.get("OPENKM_UPLOAD_ROOT", "/okm:root/Community")
 
     def is_configured(self) -> bool:
-        return bool(self.base_url and self.admin_email and self.admin_password)
+        return bool(self.base_url and self.username and self.password)
 
-    def _auth_headers(self) -> Dict[str, str]:
-        token = self._ensure_token()
-        return {"Authorization": f"Token {token}"}
+    def _auth(self):
+        return (self.username or "", self.password or "")
 
-    def _ensure_token(self) -> str:
-        if self._token:
-            return self._token
-        if not self.is_configured():
-            raise RuntimeError("Seafile not configured")
-        resp = requests.post(
-            f"{self.base_url}/api2/auth-token/",
-            data={"username": self.admin_email, "password": self.admin_password},
-            timeout=5,
-        )
-        resp.raise_for_status()
-        token = resp.json().get("token")
-        if not token:
-            raise RuntimeError("Failed to obtain Seafile token")
-        self._token = token
-        return token
+    def _doc_exists(self, path: str) -> bool:
+        try:
+            # HEAD can be used to check existence; fallback to GET metadata
+            r = requests.get(
+                f"{self.base_url}/services/rest/document/getProperties",
+                params={"docPath": path},
+                auth=self._auth(),
+                timeout=10,
+            )
+            return r.status_code == 200
+        except Exception:
+            return False
 
-    def ensure_repo(self, name: str = "Community Uploads") -> str:
-        if self.repo_id:
-            return self.repo_id
-        # Try to find existing repo by name
-        resp = requests.get(f"{self.base_url}/api2/repos/", headers=self._auth_headers(), timeout=10)
-        resp.raise_for_status()
-        for repo in resp.json():
-            if repo.get("name") == name:
-                self.repo_id = repo.get("id")
-                return self.repo_id
-        # Create repo
-        resp = requests.post(
-            f"{self.base_url}/api2/repos/",
-            headers=self._auth_headers(),
-            data={"name": name, "desc": "Uploads from Community API"},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        self.repo_id = resp.json().get("repo_id") or resp.json().get("id")
-        if not self.repo_id:
-            raise RuntimeError("Failed to create Seafile repo")
-        return self.repo_id
-
-    def upload_file(self, local_path: str, dst_path: str = "/") -> Optional[str]:
+    def upload_file(self, local_path: str, dst_dir: Optional[str] = None) -> Optional[str]:
         if not os.path.isfile(local_path):
             return None
-        repo_id = self.ensure_repo()
-        # Get upload link
-        resp = requests.get(
-            f"{self.base_url}/api2/repos/{repo_id}/upload-link/",
-            headers=self._auth_headers(),
-            params={"p": dst_path},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        upload_link = resp.text.strip().strip('"')
-        # Upload file
-        with open(local_path, "rb") as f:
-            files = {"file": (os.path.basename(local_path), f)}
-            data = {"parent_dir": dst_path}
-            up = requests.post(upload_link, files=files, data=data, timeout=60)
-            up.raise_for_status()
-            return os.path.join(dst_path, os.path.basename(local_path))
-        
+        if not self.is_configured():
+            return None
+        directory = dst_dir or f"{self.upload_root}/uploads"
+        filename = os.path.basename(local_path)
+        dst_path = f"{directory}/{filename}"
+        # If the document already exists, we can attempt a simple check-in (new version)
+        try:
+            if self._doc_exists(dst_path):
+                with open(local_path, "rb") as f:
+                    r = requests.post(
+                        f"{self.base_url}/services/rest/document/checkin",
+                        params={"docPath": dst_path, "comment": "update from community API"},
+                        files={"content": (filename, f)},
+                        auth=self._auth(),
+                        timeout=60,
+                    )
+                    if r.status_code in (200, 204):
+                        return dst_path
+            # Create new document
+            with open(local_path, "rb") as f:
+                r = requests.post(
+                    f"{self.base_url}/services/rest/document/createSimple",
+                    data={"path": dst_path},
+                    files={"content": (filename, f)},
+                    auth=self._auth(),
+                    timeout=60,
+                )
+                if r.status_code in (200, 201):
+                    return dst_path
+        except Exception:
+            return None
         return None
 
-    def update_file(self, repo_id: str, file_path: str, local_path: str) -> bool:
-        if not os.path.isfile(local_path):
-            return False
-        # Ensure leading slash for path
-        if not file_path.startswith("/"):
-            file_path = "/" + file_path
-        url = f"{self.base_url}/api2/repos/{repo_id}/file/"
-        params = {"p": file_path}
-        with open(local_path, "rb") as f:
-            files = {"file": (os.path.basename(local_path), f)}
-            resp = requests.put(url, headers=self._auth_headers(), params=params, files=files, timeout=30)
-            if resp.status_code in (200, 201):
-                return True
-        return False
 
-
-seafile_client = SeafileClient()
+openkm_client = OpenKMClient()
 
 # ==================== Auth / Security ====================
 JWT_SECRET: str = os.environ.get("JWT_SECRET_KEY", "dev-insecure-secret-change-me")
@@ -474,50 +444,19 @@ def create_access_token(email: str, role: str, expires_minutes: int = 60 * 24) -
 
 
 def get_current_user(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Dict[str, str]:
-    # Seafile-only auth
-    header = request.headers.get("authorization") or ""
-    scheme = ""
-    token = ""
-    if credentials and credentials.scheme:
-        scheme = (credentials.scheme or "").lower()
-        token = credentials.credentials or ""
-    else:
-        parts = header.split()
-        if len(parts) == 2:
-            scheme = parts[0].lower()
-            token = parts[1]
-    base_url = os.environ.get("SEAFILE_BASE_URL", "http://localhost:9002")
-    # Prefer Authorization: Token <seafile>
-    if scheme == "token" and token:
-        try:
-            resp = requests.get(
-                f"{base_url}/api2/account/info/",
-                headers={"Authorization": f"Token {token}"},
-                timeout=5,
-            )
-            if resp.status_code == 200:
-                info = resp.json()
-                email = info.get("email") or info.get("user") or "unknown@local"
-                return {"id": email, "email": email, "role": "viewer"}
-        except Exception:
-            pass
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Seafile token")
-    # Or rely on Seahub session cookies
+    # JWT-based auth (OpenKM is used only as DMS backend; app manages its own auth)
+    if not credentials or (credentials.scheme or "").lower() != "bearer":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+    token = credentials.credentials or ""
     try:
-        cookie_header = request.headers.get("cookie") or request.headers.get("Cookie")
-        if cookie_header:
-            resp = requests.get(
-                f"{base_url}/api2/account/info/",
-                headers={"Cookie": cookie_header},
-                timeout=5,
-            )
-            if resp.status_code == 200:
-                info = resp.json()
-                email = info.get("email") or info.get("user") or "unknown@local"
-                return {"id": email, "email": email, "role": "viewer"}
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        email = payload.get("sub") or ""
+        role = payload.get("role") or "viewer"
+        if not email:
+            raise ValueError("no-sub")
+        return {"id": email, "email": email, "role": role}
     except Exception:
-        pass
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized (Seafile auth required)")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
 
 
 def require_admin(user: Dict[str, str] = Depends(get_current_user)) -> Dict[str, str]:
@@ -552,10 +491,10 @@ async def upload(files: List[UploadFile] = File(...), user: Dict[str, str] = Dep
                 pass
         # Ensure we keep only the new PDF, and use its sanitized name as the stored filename
         stored_filename = os.path.basename(canonical_pdf_path)
-        # Best-effort upload canonical PDF to Seafile
+        # Best-effort upload canonical PDF to OpenKM
         try:
-            if seafile_client.is_configured():
-                seafile_client.upload_file(canonical_pdf_path, "/uploads/")
+            if openkm_client.is_configured():
+                openkm_client.upload_file(canonical_pdf_path)
         except Exception:
             pass
 
@@ -578,7 +517,7 @@ async def upload(files: List[UploadFile] = File(...), user: Dict[str, str] = Dep
             (stored_filename, lang or "unknown", text, translated),
         )
         doc_id = cur.lastrowid
-        results.append({"id": doc_id, "filename": f.filename, "lang": lang or "unknown"})
+        results.append({"id": doc_id, "filename": stored_filename, "lang": lang or "unknown"})
         # Try to create/update embedding in pgvector
         try:
             if translated:
@@ -800,10 +739,10 @@ async def redact_pdf(doc_id: int, body: RedactRequest, user: Dict[str, str] = De
         doc.save(out_path)
     finally:
         doc.close()
-    # Best-effort upload to Seafile if available
+    # Best-effort upload to OpenKM if available
     try:
-        if seafile_client.is_configured():
-            seafile_client.upload_file(out_path, "/redacted/")
+        if openkm_client.is_configured():
+            openkm_client.upload_file(out_path, dst_dir=f"{openkm_client.upload_root}/redacted")
     except Exception:
         pass
     return FileResponse(out_path, filename=f"document_{doc_id}_redacted.pdf")
@@ -840,10 +779,10 @@ async def redact_image(doc_id: int, body: ImageRedactRequest, user: Dict[str, st
     except Exception:
         raise HTTPException(status_code=500, detail="Image redaction error")
 
-    # Best-effort upload to Seafile if available
+    # Best-effort upload to OpenKM if available
     try:
-        if seafile_client.is_configured():
-            seafile_client.upload_file(out_path, "/redacted/")
+        if openkm_client.is_configured():
+            openkm_client.upload_file(out_path, dst_dir=f"{openkm_client.upload_root}/redacted")
     except Exception:
         pass
     return FileResponse(out_path, filename=f"document_{doc_id}_redacted.png")
@@ -888,7 +827,7 @@ async def redact_bytes(
             try:
                 doc = fitz.open(stream=raw, filetype="pdf")
             except Exception:
-                # Some Seahub raw links may return HTML; try to fetch via URL if provided as filename
+                # Fallback: try to fetch via URL if provided as filename
                 try:
                     import requests as _r
                     if file and getattr(file, 'filename', None) and str(file.filename).startswith('http'):
@@ -929,11 +868,10 @@ async def redact_bytes(
             finally:
                 try: doc.close()
                 except Exception: pass
-            # If repo info provided, overwrite file in Seafile, else return the file
-            # Never overwrite originals; always return or upload as a new file
+            # Never overwrite originals; optionally upload to OpenKM as a new document
             try:
-                if seafile_client.is_configured():
-                    seafile_client.upload_file(out_path, "/redacted/")
+                if openkm_client.is_configured():
+                    openkm_client.upload_file(out_path, dst_dir=f"{openkm_client.upload_root}/redacted")
             except Exception:
                 pass
             return FileResponse(out_path, filename=(file.filename or "redacted.pdf"))
@@ -949,8 +887,8 @@ async def redact_bytes(
                 out_path = out_fd.name; out_fd.close()
                 img.save(out_path, format="PNG")
                 try:
-                    if seafile_client.is_configured():
-                        seafile_client.upload_file(out_path, "/redacted/")
+                    if openkm_client.is_configured():
+                        openkm_client.upload_file(out_path, dst_dir=f"{openkm_client.upload_root}/redacted")
                 except Exception:
                     pass
                 return FileResponse(out_path, filename=(file.filename or "redacted.png").rsplit('.',1)[0] + "_redacted.png")
@@ -1194,8 +1132,9 @@ async def login(body: LoginRequest):
         totp = pyotp.TOTP(mfa_secret)
         if not totp.verify(body.otp_code, valid_window=1):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid OTP code")
-    # Disable JWT issuance; Seafile-only auth in this deployment
-    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="JWT disabled. Use Seafile authentication.")
+    # Issue JWT for the app
+    token = create_access_token(email=email, role=role)
+    return {"access_token": token, "token_type": "bearer"}
 
 
 @app.get("/community-api/auth/me")

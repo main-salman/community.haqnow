@@ -57,7 +57,7 @@ ssh -o StrictHostKeyChecking=no root@"$SERVER_IP" 'mkdir -p /opt/foi-archive /op
 scp -o StrictHostKeyChecking=no "$PROJECT_ROOT/.env" root@"$SERVER_IP":/opt/foi-archive/.env || true
 
 # Remote setup and deployment (non-docker)
-log "Provisioning Seafile + OnlyOffice + API docker-compose stack..."
+log "Provisioning static site + API + Ollama docker-compose stack (OpenKM external or separate compose)..."
 ssh -o StrictHostKeyChecking=no root@"$SERVER_IP" env REPO_URL="$REPO_URL" BRANCH="$BRANCH" bash -s <<'REMOTE3'
 set -euo pipefail
 log() { echo -e "[remote] $*"; }
@@ -130,58 +130,14 @@ argostranslate
 EOF
 fi
 
-# Write docker-compose.yml for Seafile stack
 cat > /opt/foi-archive/docker-compose.yml <<'EOF'
 version: '3.8'
 services:
-  seafile:
-    image: seafileltd/seafile-mc:latest
-    container_name: seafile
-    restart: unless-stopped
-    ports:
-      - "9002:80"
-    environment:
-      - SEAFILE_SERVER_HOSTNAME=${SEAFILE_DOMAIN:-community.haqnow.com}
-      - SEAFILE_ADMIN_EMAIL=${admin_email}
-      - SEAFILE_ADMIN_PASSWORD=${admin_password}
-      - DB_HOST=mysql
-      - DB_ROOT_PASSWD=${MYSQL_ROOT_PASSWORD:-rootpass}
-      - SEAFILE_FILESYSTEM_PROVIDER=s3
-      - S3_USE_HTTPS=true
-      - S3_ACCESS_KEY_ID=${EXOSCALE_S3_ACCESS_KEY}
-      - S3_SECRET_ACCESS_KEY=${EXOSCALE_S3_SECRET_KEY}
-      - S3_ENDPOINT=${EXOSCALE_S3_ENDPOINT}
-      - S3_BUCKET=${EXOSCALE_BUCKET:-community-haqnow-docs}
-      - S3_REGION=${EXOSCALE_S3_REGION}
-    volumes:
-      - seafile_data:/shared
-      - /opt/foi-archive/seahub-custom:/shared/seafile/seahub-data/custom:ro
-    depends_on:
-      - mysql
-  mysql:
-    image: mariadb:10.11
-    container_name: seafile-db
-    restart: unless-stopped
-    environment:
-      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-rootpass}
-      - MYSQL_LOG_CONSOLE=true
-    volumes:
-      - db_data:/var/lib/mysql
-  onlyoffice:
-    image: onlyoffice/documentserver:latest
-    container_name: onlyoffice
-    restart: unless-stopped
-    environment:
-      - JWT_ENABLED=true
-      - JWT_SECRET=${ONLYOFFICE_JWT_SECRET}
-    ports:
-      - "9003:80"
-    depends_on:
-      - seafile
   commapi:
     build:
       context: /opt/foi-archive/backend_simple
       dockerfile: Dockerfile.api
+    container_name: community-api
     restart: unless-stopped
     working_dir: /app
     env_file:
@@ -190,11 +146,12 @@ services:
       - COMMUNITY_DB=/opt/foi-archive/community.db
       - COMMUNITY_DATA=/opt/foi-archive/data
       - TESS_LANGS=eng+ara+rus+fra
-      - SEAFILE_BASE_URL=http://seafile
-      - SEAFILE_ADMIN_EMAIL=${admin_email}
-      - SEAFILE_ADMIN_PASSWORD=${admin_password}
       - OLLAMA_HOST=http://ollama:11434
       - OLLAMA_MODEL=llama3
+      - OPENKM_BASE_URL=${OPENKM_BASE_URL}
+      - OPENKM_USERNAME=${OPENKM_USERNAME}
+      - OPENKM_PASSWORD=${OPENKM_PASSWORD}
+      - OPENKM_UPLOAD_ROOT=${OPENKM_UPLOAD_ROOT:-/okm:root/Community}
     ports:
       - "8000:8000"
     healthcheck:
@@ -204,7 +161,6 @@ services:
       retries: 30
       start_period: 60s
     depends_on:
-      - seafile
       - ollama
   ollama:
     image: ollama/ollama:latest
@@ -221,35 +177,17 @@ services:
       retries: 30
       start_period: 30s
 volumes:
-  seafile_data: {}
-  db_data: {}
   ollama_data: {}
 EOF
 
-# Nginx reverse proxy for Seahub, OnlyOffice, and API
+# Nginx: serve static site and proxy API
 cat > /etc/nginx/sites-available/foi-archive <<'EOF'
 server {
     listen 80;
     server_name community.haqnow.com _;
     client_max_body_size 200M;
-    location / {
-        proxy_pass http://localhost:9002/;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        # Temporary: inject redact tool until Seahub template override is verified
-        sub_filter_once off;
-        sub_filter '</body>' '<script src="/media/custom/custom.js"></script></body>';
-        sub_filter_types text/html;
-    }
-    location /onlyoffice/ {
-        proxy_pass http://localhost:9003/;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
+    root /opt/foi-archive/site;
+    index index.html;
     location /community-api/ {
         proxy_pass http://localhost:8000/community-api/;
         proxy_set_header Host $host;
@@ -257,14 +195,12 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
-    # custom assets now mounted directly into Seahub via seahub-data/custom
     location = /health { proxy_pass http://localhost:8000/health; }
 }
 EOF
 
-# Prepare Seahub customization (custom.js at root of custom dir)
-mkdir -p /opt/foi-archive/seahub-custom
-cp -f /opt/foi-archive/site/seahub-redact.js /opt/foi-archive/seahub-custom/custom.js || true
+# Ensure static site present
+mkdir -p /opt/foi-archive/site
 
 ln -sf /etc/nginx/sites-available/foi-archive /etc/nginx/sites-enabled/foi-archive
 rm -f /etc/nginx/sites-enabled/default || true
@@ -274,11 +210,8 @@ nginx -t && systemctl restart nginx || true
 
 # Start/refresh stack
 docker-compose pull || true
-# Rebuild API to pick up code changes
 docker-compose build commapi || true
-# Remove old API container to avoid docker-compose 'ContainerConfig' bug on recreate
 docker-compose rm -f -s commapi || true
-docker-compose rm -f -s seafile || true
 docker-compose up -d --remove-orphans
 
 # Basic health check
@@ -294,5 +227,5 @@ REMOTE3
 log "Deployment completed."
 
 echo ""
-echo "Seafile UI:   http://${SERVER_IP}"
+echo "Site:         http://${SERVER_IP}"
 echo "API health:   http://${SERVER_IP}/health"

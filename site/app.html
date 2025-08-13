@@ -107,15 +107,15 @@
     </main>
 
     <script>
-      const token = null;
       const errorBox = document.getElementById('error');
       const uploadMsg = document.getElementById('uploadMsg');
 
-      function ensureAuth() { return true; }
+      function token() { return localStorage.getItem('token') || ''; }
+      function ensureAuth() { return !!token(); }
 
       async function authed(url, options = {}) {
-        const headers = Object.assign({}, options.headers || {});
-        const opts = Object.assign({}, options, { headers, credentials: 'include' });
+        const headers = Object.assign({}, options.headers || {}, { 'Authorization': 'Bearer ' + token() });
+        const opts = Object.assign({}, options, { headers });
         const res = await fetch(url, opts);
         if (res.status === 401) { throw new Error('Unauthorized'); }
         return res;
@@ -135,7 +135,7 @@
         } catch (e) { errorBox.textContent = e.message; }
       }
 
-      document.getElementById('logout').addEventListener('click', (e) => {
+       document.getElementById('logout').addEventListener('click', (e) => {
         e.preventDefault();
         localStorage.removeItem('token');
         window.location.href = '/login.html';
