@@ -193,7 +193,22 @@ server {
     listen 80;
     server_name community.haqnow.com _;
     client_max_body_size 200M;
-    # Root and /openkm -> OpenKM UI
+
+    # Redirect root to OpenKM context
+    location = / {
+        return 302 /OpenKM/;
+    }
+
+    # Proxy the OpenKM context (preserve /OpenKM/* path)
+    location /OpenKM/ {
+        proxy_pass http://localhost:9080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Convenience alias
     location /openkm/ {
         proxy_pass http://localhost:9080/OpenKM/;
         proxy_set_header Host $host;
@@ -201,16 +216,7 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
-    location = /openkm {
-        return 301 /openkm/;
-    }
-    location / {
-        proxy_pass http://localhost:9080/OpenKM/;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
+
     location /community-api/ {
         proxy_pass http://localhost:8000/community-api/;
         proxy_set_header Host $host;
