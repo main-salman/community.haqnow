@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MFA — Community HaqNow</title>
+    <link rel="stylesheet" href="/apple.css" />
+  </head>
+  <body>
+    <header>
+      <strong>Community HaqNow</strong>
+    </header>
+    <main>
+      <h1>Setup MFA</h1>
+      <p class="muted">Enable MFA (TOTP) for your account.</p>
+      <div class="row">
+        <button id="setup">Generate Secret</button>
+        <span id="secret" class="pill"></span>
+      </div>
+      <div class="space"></div>
+      <div>
+        <p>Scan the QR in your authenticator app using this URI:</p>
+        <pre id="uri" class="muted" style="white-space:wrap"></pre>
+      </div>
+      <div class="row">
+        <input id="otp" type="text" placeholder="Enter 6-digit code" />
+        <button id="verify">Verify & Enable</button>
+      </div>
+      <div id="out" class="muted"></div>
+      <div class="error" id="error"></div>
+    </main>
+    <script>
+      function token() { return localStorage.getItem('token') || ''; }
+      async function authed(url, options={}) {
+        const headers = Object.assign({}, options.headers||{}, { 'Authorization': 'Bearer ' + token(), 'Content-Type': 'application/json' });
+        const res = await fetch(url, Object.assign({}, options, { headers }));
+        if (res.status === 401) { window.location.href = '/login.html'; throw new Error('Unauthorized'); }
+        return res;
+      }
+      document.getElementById('setup').addEventListener('click', async () => {
+        try {
+          const res = await authed('/community-api/auth/mfa/setup', { method: 'POST' });
+          const data = await res.json();
+          document.getElementById('secret').textContent = data.secret;
+          document.getElementById('uri').textContent = data.provisioning_uri;
+        } catch (e) { document.getElementById('error').textContent = e.message; }
+      });
+      document.getElementById('verify').addEventListener('click', async () => {
+        try {
+          const code = document.getElementById('otp').value.trim();
+          const res = await authed('/community-api/auth/mfa/verify', { method:'POST', body: JSON.stringify({ otp_code: code }) });
+          const data = await res.json();
+          document.getElementById('out').textContent = 'MFA enabled.';
+        } catch (e) { document.getElementById('error').textContent = e.message; }
+      });
+    </script>
+  </body>
+  </html>
+
+

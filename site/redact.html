@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Redact — Community HaqNow</title>
+    <link rel="stylesheet" href="/apple.css" />
+    <style>
+      body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, sans-serif; }
+      header { padding: 12px 16px; border-bottom: 1px solid #e5e7eb; display:flex; align-items:center; justify-content:space-between; }
+      main { padding: 16px; }
+      .toolbar { display:flex; gap:8px; align-items:center; margin-bottom:12px; }
+      #canvasWrap { position: relative; display: inline-block; }
+      canvas { border: 1px solid #e5e7eb; background: #fff; }
+      .pill { display:inline-block; padding:4px 8px; border-radius:12px; background:#eef2ff; color:#3730a3; }
+      .muted { color:#6b7280; }
+      button { padding: 8px 12px; border-radius: 8px; background: #111827; color: #fff; border: 0; }
+      input[type="number"] { width: 100px; }
+      @media (prefers-color-scheme: dark) {
+        header { border-color:#374151; }
+        canvas { background:#111827; border-color:#374151; }
+        button { background:#2563eb; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>Redaction Tool</strong>
+      <nav><a href="/app.html">Back</a></nav>
+    </header>
+    <main>
+      <div class="toolbar">
+        <span>Doc ID: <span id="docIdSpan" class="pill"></span></span>
+        <label>Page <input id="pageInput" type="number" min="1" value="1" /></label>
+        <button id="clear">Clear Boxes</button>
+        <button id="redact">Apply Redaction</button>
+        <span id="status" class="muted"></span>
+      </div>
+      <div id="canvasWrap">
+        <canvas id="c" width="900" height="1200"></canvas>
+      </div>
+      <p class="muted">Tip: Click and drag to add a black box. Drag edges to adjust. Works for PDFs (page-by-page) and images. Redactions are burned into a derived file.</p>
+    </main>
+    <script>
+      const params = new URLSearchParams(location.search);
+      const docId = Number(params.get('docId') || '');
+      const pageInput = document.getElementById('pageInput');
+      const statusEl = document.getElementById('status');
+      document.getElementById('docIdSpan').textContent = String(docId || '-');
+
+      function token() { return localStorage.getItem('token') || ''; }
+      async function authed(url, options={}) {
+        const headers = Object.assign({}, options.headers||{}, { 'Authorization': 'Bearer ' + token(), 'Content-Type': 'application/json' });
+        const res = await fetch(url, Object.assign({}, options, { headers }));
+        if (res.status === 401) { window.location.href = '/login.html'; throw new Error('Unauthorized'); }
+        return res;
+      }
+
+      const canvas = document.getElementById('c');
+      const ctx = canvas.getContext('2d');
+      const boxes = []; // {x,y,w,h}
+      let drag = null; // index of box or null
+      let resizing = null; // {i, edge}
+      let start = null;
+
+      function draw() {
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0,0,canvas.width,canvas.height);
+        // background placeholder
+        ctx.fillStyle = 'rgba(0,0,0,0.04)';
+        ctx.fillRect(0,0,canvas.width,canvas.height);
+        // boxes
+        for (let i=0;i<boxes.length;i++) {
+          const b = boxes[i];
+          ctx.fillStyle = 'rgba(0,0,0,0.75)';
+          ctx.fillRect(b.x, b.y, b.w, b.h);
+          ctx.strokeStyle = '#2563eb';
+          ctx.lineWidth = 2; ctx.strokeRect(b.x, b.y, b.w, b.h);
+        }
+      }
+
+      function hitEdge(b, x, y) {
+        const pad = 6;
+        const edges = [];
+        if (Math.abs(x - b.x) <= pad && y >= b.y - pad && y <= b.y + b.h + pad) edges.push('l');
+        if (Math.abs(x - (b.x + b.w)) <= pad && y >= b.y - pad && y <= b.y + b.h + pad) edges.push('r');
+        if (Math.abs(y - b.y) <= pad && x >= b.x - pad && x <= b.x + b.w + pad) edges.push('t');
+        if (Math.abs(y - (b.y + b.h)) <= pad && x >= b.x - pad && x <= b.x + b.w + pad) edges.push('b');
+        return edges[0] || null;
+      }
+
+      canvas.addEventListener('mousedown', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left; const y = e.clientY - rect.top;
+        // check resize first
+        for (let i=boxes.length-1;i>=0;i--) {
+          const b = boxes[i];
+          const edge = hitEdge(b, x, y);
+          if (edge) { resizing = { i, edge }; start = { x, y, bx: b.x, by: b.y, bw: b.w, bh: b.h }; return; }
+          if (x>=b.x && x<=b.x+b.w && y>=b.y && y<=b.y+b.h) { drag = i; start = { x, y, bx: b.x, by: b.y }; return; }
+        }
+        start = { x, y }; boxes.push({ x, y, w: 0, h: 0 }); drag = boxes.length-1;
+      });
+
+      canvas.addEventListener('mousemove', (e) => {
+        if (!start) return;
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left; const y = e.clientY - rect.top;
+        if (resizing) {
+          const b = boxes[resizing.i];
+          const dx = x - start.x; const dy = y - start.y;
+          b.x = start.bx; b.y = start.by; b.w = start.bw; b.h = start.bh;
+          if (resizing.edge === 'l') { b.x = start.bx + dx; b.w = start.bw - dx; }
+          if (resizing.edge === 'r') { b.w = start.bw + dx; }
+          if (resizing.edge === 't') { b.y = start.by + dy; b.h = start.bh - dy; }
+          if (resizing.edge === 'b') { b.h = start.bh + dy; }
+          draw(); return;
+        }
+        const b = boxes[drag];
+        if (!b) return;
+        if (b.w === 0 && b.h === 0) { b.w = x - start.x; b.h = y - start.y; }
+        else { const dx = x - start.x; const dy = y - start.y; b.x = start.bx + dx; b.y = start.by + dy; }
+        draw();
+      });
+
+      window.addEventListener('mouseup', () => { drag = null; resizing = null; start = null; draw(); });
+
+      document.getElementById('clear').addEventListener('click', () => { boxes.length = 0; draw(); });
+
+      async function applyRedaction() {
+        statusEl.textContent = 'Redacting...';
+        const page = Number(pageInput.value || '1');
+        const rects = boxes.filter(b => Math.abs(b.w) > 1 && Math.abs(b.h) > 1).map(b => {
+          const norm = { x: Math.min(b.x, b.x+b.w), y: Math.min(b.y, b.y+b.h), w: Math.abs(b.w), h: Math.abs(b.h) };
+          return { page, x: Math.round(norm.x), y: Math.round(norm.y), width: Math.round(norm.w), height: Math.round(norm.h) };
+        });
+        try {
+          const res = await authed(`/community-api/docs/${docId}/redact`, { method:'POST', body: JSON.stringify({ rects }) });
+          if (!res.ok) throw new Error('Redaction failed');
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a'); a.href = url; a.download = `document_${docId}_redacted.pdf`; a.click();
+          URL.revokeObjectURL(url);
+          statusEl.textContent = 'Done.';
+        } catch (e) { statusEl.textContent = e.message; }
+      }
+
+      document.getElementById('redact').addEventListener('click', applyRedaction);
+
+      draw();
+    </script>
+  </body>
+</html>
+

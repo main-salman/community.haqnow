@@ -1,36 +1,20 @@
 <!doctype html>
 <html lang="en">
-  <head>
+    <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Community HaqNow</title>
-    <style>
-      :root { color-scheme: light dark; }
-      body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, sans-serif; }
-      header { padding: 24px; border-bottom: 1px solid #e5e7eb; }
-      main { padding: 40px 24px; max-width: 980px; margin: 0 auto; }
-      h1 { font-size: 2rem; margin: 0 0 8px; }
-      p.lead { font-size: 1.1rem; color: #6b7280; margin: 0 0 24px; }
-      .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-top: 24px; }
-      .card { border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; background: #fff; }
-      .muted { color: #6b7280; }
-      footer { padding: 24px; text-align: center; border-top: 1px solid #e5e7eb; margin-top: 40px; font-size: 0.9rem; }
-      @media (prefers-color-scheme: dark) {
-        header, footer { border-color: #374151; }
-        .card { background: #111827; border-color: #374151; }
-        .muted { color: #9ca3af; }
-      }
-      a.button { display: inline-block; padding: 10px 14px; border-radius: 10px; background: #111827; color: #fff; text-decoration: none; }
-      @media (prefers-color-scheme: dark) { a.button { background: #2563eb; } }
-    </style>
+      <link rel="stylesheet" href="/apple.css" />
   </head>
   <body>
     <header>
       <strong>Community HaqNow</strong>
     </header>
     <main>
-      <h1>Community HaqNow</h1>
-      <p class="lead">Upload, OCR, translate, search, redact, and collaborate on documents — with local AI Q&A.</p>
+      <div class="hero">
+        <h1>Community HaqNow</h1>
+        <p class="lead">Upload, OCR, translate, search, redact, and collaborate on documents — with local AI Q&A.</p>
+      </div>
 
       <div class="cards">
         <div class="card">
@@ -51,9 +35,14 @@
         </div>
       </div>
 
-      <p style="margin-top:24px">
-        <a class="button" href="/api/health">API Health</a>
-      </p>
+      <div class="space"></div>
+      <div class="row">
+        <a class="button" href="/health">API Health</a>
+        <a class="button secondary" href="/login.html">Login</a>
+        <a class="button secondary" href="/app.html">App</a>
+        <a class="button secondary" href="/admin.html">Admin</a>
+        <a class="button secondary" href="/mfa.html">MFA</a>
+      </div>
       <p class="muted">Admin manages users with MFA. Live co-editing and highlights are supported.</p>
     </main>
     <footer>

@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>App — Community HaqNow</title>
+    <link rel="stylesheet" href="/apple.css" />
+    <style>
+      body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, sans-serif; }
+      header { padding: 16px 24px; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; justify-content: space-between; }
+      main { padding: 24px; max-width: 1000px; margin: 0 auto; }
+      h1 { font-size: 1.5rem; margin: 0 0 16px; }
+      section { border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; margin-bottom: 16px; background: #fff; }
+      .row { display: flex; gap: 8px; align-items: center; }
+      input[type="file"], input[type="text"] { padding: 10px 12px; border: 1px solid #e5e7eb; border-radius: 10px; }
+      button { padding: 10px 14px; border-radius: 10px; background: #111827; color: #fff; border: 0; }
+      table { border-collapse: collapse; width: 100%; }
+      th, td { padding: 8px 10px; border-bottom: 1px solid #e5e7eb; text-align: left; }
+      .muted { color: #6b7280; }
+      .error { color: #b91c1c; }
+      nav a { margin-right: 8px; text-decoration: none; color: #2563eb; }
+      @media (prefers-color-scheme: dark) {
+        header { border-color: #374151; }
+        section { background: #111827; border-color: #374151; }
+        input[type="file"], input[type="text"] { background: #111827; color: #fff; border-color: #374151; }
+        button { background: #2563eb; }
+        th, td { border-color: #374151; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>Community HaqNow</strong>
+      <nav>
+        <a href="/admin.html">Admin</a>
+        <a href="#" id="logout">Logout</a>
+      </nav>
+    </header>
+    <main>
+      <h1>Documents</h1>
+
+      <section>
+        <h3>Upload</h3>
+        <form id="uploadForm" class="row">
+          <input id="files" type="file" multiple />
+          <button type="submit">Upload</button>
+        </form>
+        <div class="muted" id="uploadMsg"></div>
+      </section>
+
+      <section>
+        <h3>Search</h3>
+        <form id="searchForm" class="row">
+          <input id="q" type="text" placeholder="Search text..." />
+          <input id="tag" type="text" placeholder="Filter by tag (optional)" />
+          <button type="submit">Search</button>
+        </form>
+        <div id="searchResults"></div>
+      </section>
+
+      <section>
+        <h3>Recent Documents</h3>
+        <div class="file-toolbar">
+          <button class="secondary" id="selectAll">Select All</button>
+          <button class="secondary" id="clearSel">Clear</button>
+          <input id="bulkTag" type="text" placeholder="Tag for selected..." />
+          <button id="bulkAdd">Add Tag to Selected</button>
+          <button id="bulkDel">Remove Tag from Selected</button>
+        </div>
+        <div id="fileGrid" class="file-grid"></div>
+      </section>
+
+      <section>
+        <h3>Document Actions</h3>
+        <div class="row">
+          <input id="docId" type="number" placeholder="Doc ID" />
+          <input id="noteText" type="text" placeholder="Add note..." />
+          <button id="addNote" type="button">Add Note</button>
+        </div>
+        <div class="space"></div>
+        <div class="row">
+          <input id="tagName" type="text" placeholder="Tag name" />
+          <button id="addTag" type="button">Add Tag</button>
+          <button id="delTag" type="button">Remove Tag</button>
+          <button id="listTags" type="button">List Tags</button>
+        </div>
+        <div class="space"></div>
+        <div class="row">
+          <input id="qaQ" type="text" placeholder="Ask a question about your docs..." />
+          <button id="askQa" type="button">Ask</button>
+        </div>
+        <div class="space"></div>
+        <div class="row">
+          <input id="pages" type="text" placeholder="Export pages e.g., 1-2,5" />
+          <button id="exportPdf" type="button">Export PDF</button>
+        </div>
+        <div class="space"></div>
+        <div class="row">
+          <input id="redactRects" type="text" placeholder='Redact rects JSON e.g., [{"page":1,"x":10,"y":10,"width":100,"height":40}]' />
+          <button id="redactPdf" type="button">Redact PDF</button>
+        </div>
+        <div id="actionsOut" class="muted"></div>
+      </section>
+
+      <p class="muted">Tip: Select a doc ID from the table above to use with actions.</p>
+      <div class="error" id="error"></div>
+    </main>
+
+    <script>
+      const token = localStorage.getItem('token');
+      const errorBox = document.getElementById('error');
+      const uploadMsg = document.getElementById('uploadMsg');
+
+      function ensureAuth() {
+        if (!token) { window.location.href = '/login.html'; return false; }
+        return true;
+      }
+
+      async function authed(url, options = {}) {
+        const headers = Object.assign({}, options.headers || {}, { 'Authorization': 'Bearer ' + (localStorage.getItem('token') || '') });
+        const res = await fetch(url, Object.assign({}, options, { headers }));
+        if (res.status === 401) { window.location.href = '/login.html'; throw new Error('Unauthorized'); }
+        return res;
+      }
+
+      async function loadDocs() {
+        try {
+          const res = await authed('/community-api/docs');
+          const data = await res.json();
+          const rows = document.getElementById('docsRows');
+          rows.innerHTML = '';
+          for (const d of (data.docs || [])) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${d.id}</td><td>${d.filename}</td><td>${d.lang}</td>`;
+            rows.appendChild(tr);
+          }
+        } catch (e) { errorBox.textContent = e.message; }
+      }
+
+      document.getElementById('logout').addEventListener('click', (e) => {
+        e.preventDefault();
+        localStorage.removeItem('token');
+        window.location.href = '/login.html';
+      });
+
+      document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+        e.preventDefault(); if (!ensureAuth()) return;
+        const files = document.getElementById('files').files;
+        if (!files || files.length === 0) { uploadMsg.textContent = 'Select files.'; return; }
+        const form = new FormData();
+        for (const f of files) form.append('files', f);
+        try {
+          const res = await authed('/community-api/upload', { method: 'POST', body: form });
+          if (!res.ok) throw new Error('Upload failed');
+          const data = await res.json();
+          uploadMsg.textContent = `Uploaded ${data.uploaded?.length || 0} file(s).`;
+          loadDocs();
+        } catch (err) { uploadMsg.textContent = ''; errorBox.textContent = err.message; }
+      });
+
+      document.getElementById('searchForm').addEventListener('submit', async (e) => {
+        e.preventDefault(); if (!ensureAuth()) return;
+        const q = document.getElementById('q').value.trim();
+        const tag = document.getElementById('tag').value.trim();
+        if (!q) return;
+        try {
+          const url = '/community-api/search?q=' + encodeURIComponent(q) + (tag ? ('&tag=' + encodeURIComponent(tag)) : '');
+          const res = await authed(url);
+          if (!res.ok) throw new Error('Search failed');
+          const data = await res.json();
+          const holder = document.getElementById('searchResults');
+          holder.innerHTML = '';
+          for (const r of (data.results || [])) {
+            const div = document.createElement('div');
+            div.className = 'muted';
+            div.innerHTML = `<strong>${r.filename}</strong><br/><div>${r.snippet_text || ''}</div><div>${r.snippet_translated || ''}</div><hr/>`;
+            holder.appendChild(div);
+          }
+        } catch (err) { errorBox.textContent = err.message; }
+      });
+
+      // Helpers for actions
+      const selected = new Set();
+      function renderFiles(docs) {
+        const grid = document.getElementById('fileGrid');
+        grid.innerHTML = '';
+        for (const d of (docs || [])) {
+          const div = document.createElement('div');
+          div.className = 'file-item' + (selected.has(d.id) ? ' selected' : '');
+          div.setAttribute('data-id', d.id);
+          div.innerHTML = `<div style=\"font-weight:600;\">${d.filename}</div><div class=\"muted\">Lang: ${d.lang}</div><div><a href=\"/redact.html?docId=${d.id}\">Redact</a></div><div id=\"chips-${d.id}\"></div>`;
+          div.addEventListener('click', async (e) => {
+            const id = d.id;
+            if (e.shiftKey || e.metaKey || e.ctrlKey) {
+              if (selected.has(id)) selected.delete(id); else selected.add(id);
+            } else {
+              selected.clear(); selected.add(id); document.getElementById('docId').value = String(id);
+            }
+            renderFiles(docs);
+            try {
+              const res = await authed(`/community-api/docs/${id}/tags`);
+              const data = await jsonRes(res);
+              const holder = div.querySelector(`#chips-${id}`);
+              holder.innerHTML = '';
+              (data.tags||[]).forEach(t => { const chip = document.createElement('span'); chip.className='chip'; chip.textContent=t; holder.appendChild(chip); });
+            } catch {}
+          });
+          grid.appendChild(div);
+        }
+      }
+
+      async function jsonRes(res) { try { return await res.json(); } catch { const t = await res.text(); throw new Error(t.slice(0,200)); } }
+
+      document.getElementById('addNote').addEventListener('click', async () => {
+        if (!ensureAuth()) return;
+        const id = Number(document.getElementById('docId').value);
+        const content = document.getElementById('noteText').value.trim();
+        const out = document.getElementById('actionsOut');
+        try {
+          const res = await authed(`/community-api/docs/${id}/notes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content })});
+          const data = await jsonRes(res);
+          out.textContent = `Note added: ${JSON.stringify(data)}`;
+        } catch (e) { errorBox.textContent = e.message; }
+      });
+
+      document.getElementById('addTag').addEventListener('click', async () => {
+        if (!ensureAuth()) return;
+        const id = Number(document.getElementById('docId').value);
+        const name = document.getElementById('tagName').value.trim();
+        const out = document.getElementById('actionsOut');
+        try {
+          const res = await authed(`/community-api/docs/${id}/tags`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name })});
+          const data = await jsonRes(res);
+          out.textContent = `Tag added: ${JSON.stringify(data)}`;
+        } catch (e) { errorBox.textContent = e.message; }
+      });
+
+      document.getElementById('delTag').addEventListener('click', async () => {
+        if (!ensureAuth()) return;
+        const id = Number(document.getElementById('docId').value);
+        const name = document.getElementById('tagName').value.trim();
+        const out = document.getElementById('actionsOut');
+        try {
+          const res = await authed(`/community-api/docs/${id}/tags`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name })});
+          const data = await jsonRes(res);
+          out.textContent = `Tag removed: ${JSON.stringify(data)}`;
+        } catch (e) { errorBox.textContent = e.message; }
+      });
+
+      document.getElementById('listTags').addEventListener('click', async () => {
+        if (!ensureAuth()) return;
+        const id = Number(document.getElementById('docId').value);
+        const out = document.getElementById('actionsOut');
+        try {
+          const res = await authed(`/community-api/docs/${id}/tags`);
+          const data = await jsonRes(res);
+          out.textContent = `Tags: ${JSON.stringify(data.tags || [])}`;
+        } catch (e) { errorBox.textContent = e.message; }
+      });
+
+      document.getElementById('askQa').addEventListener('click', async () => {
+        if (!ensureAuth()) return;
+        const q = document.getElementById('qaQ').value.trim();
+        const out = document.getElementById('actionsOut');
+        try {
+          const res = await authed('/community-api/qa', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question: q })});
+          const data = await jsonRes(res);
+          out.textContent = `Answers: ${JSON.stringify(data.answers || [])}`;
+        } catch (e) { errorBox.textContent = e.message; }
+      });
+
+      document.getElementById('exportPdf').addEventListener('click', async () => {
+        if (!ensureAuth()) return;
+        const id = Number(document.getElementById('docId').value);
+        const pages = document.getElementById('pages').value.trim();
+        try {
+          const res = await authed(`/community-api/docs/${id}/export?pages=${encodeURIComponent(pages)}`);
+          if (!res.ok) throw new Error('Export failed');
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = `document_${id}_export.pdf`; a.click();
+          URL.revokeObjectURL(url);
+        } catch (e) { errorBox.textContent = e.message; }
+      });
+
+      document.getElementById('redactPdf').addEventListener('click', async () => {
+        if (!ensureAuth()) return;
+        const id = Number(document.getElementById('docId').value);
+        const rects = document.getElementById('redactRects').value.trim();
+        try {
+          const res = await authed(`/community-api/docs/${id}/redact`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: rects });
+          if (!res.ok) throw new Error('Redact failed');
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = `document_${id}_redacted.pdf`; a.click();
+          URL.revokeObjectURL(url);
+        } catch (e) { errorBox.textContent = e.message; }
+      });
+
+      // Initial
+      document.getElementById('selectAll').addEventListener('click', () => {
+        const cards = document.querySelectorAll('.file-item');
+        cards.forEach(c => selected.add(Number(c.getAttribute('data-id'))));
+        loadDocs();
+      });
+      document.getElementById('clearSel').addEventListener('click', () => { selected.clear(); loadDocs(); });
+      async function bulkTag(op) {
+        const name = document.getElementById('bulkTag').value.trim();
+        if (!name || selected.size === 0) { errorBox.textContent = 'Select docs and enter tag'; return; }
+        const ids = Array.from(selected.values());
+        const url = '/community-api/docs/tags/bulk';
+        const method = op === 'add' ? 'POST' : 'DELETE';
+        try {
+          const res = await authed(url, { method, headers:{'Content-Type':'application/json'}, body: JSON.stringify({ name, doc_ids: ids })});
+          await jsonRes(res);
+          loadDocs();
+        } catch (e) { errorBox.textContent = e.message; }
+      }
+      document.getElementById('bulkAdd').addEventListener('click', () => bulkTag('add'));
+      document.getElementById('bulkDel').addEventListener('click', () => bulkTag('del'));
+
+      if (ensureAuth()) { loadDocs(); }
+    </script>
+  </body>
+  </html>
+
+

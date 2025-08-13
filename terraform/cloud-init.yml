@@ -13,8 +13,6 @@ packages:
   - curl
   - wget
   - unzip
-  - mysql-server
-  - mysql-client
   - python3
   - python3-pip
 
@@ -29,8 +27,6 @@ runcmd:
   - systemctl start docker
   - usermod -aG docker ubuntu
   - usermod -aG docker foi
-  - systemctl enable mysql
-  - systemctl start mysql
   - pip3 install pymysql psycopg2-binary requests
   - mkdir -p /opt/foi-archive
   - mkdir -p /var/log/foi
@@ -170,25 +166,71 @@ DEBUG=false
     cat > /opt/foi-archive/docker-compose.yml << 'EOF'
     version: '3.8'
     services:
-      redis:
-        image: redis:7-alpine
+      seafile:
+        image: docker.seafile.top/seafileltd/seafile-mc:${seafile_version}
+        container_name: seafile
         restart: unless-stopped
-        ports: ["6379:6379"]
-        volumes: [redis_data:/data]
-      backend:
-        build: { context: ./backend, dockerfile: Dockerfile }
+        ports:
+          - "9002:80"
+        environment:
+          - SEAFILE_SERVER_HOSTNAME=${seafile_domain}
+          - SEAFILE_ADMIN_EMAIL=${admin_email}
+          - SEAFILE_ADMIN_PASSWORD=${admin_password}
+          - DB_HOST=mysql
+          - DB_ROOT_PASSWD=${mysql_root_password}
+          - SEAFILE_FILESYSTEM_PROVIDER=s3
+          - S3_USE_HTTPS=true
+          - S3_ACCESS_KEY_ID=${s3_access_key}
+          - S3_SECRET_ACCESS_KEY=${s3_secret_key}
+          - S3_ENDPOINT=${s3_endpoint}
+          - S3_BUCKET=${s3_bucket}
+          - S3_REGION=${s3_region}
+        volumes:
+          - seafile_data:/shared
+          - /opt/foi-archive/seahub-custom:/shared/seafile/seahub-data/custom:ro
+      mysql:
+        image: mariadb:10.11
+        container_name: seafile-db
         restart: unless-stopped
-        ports: ["8000:8000"]
-        env_file: [.env]
-        depends_on: [redis]
-        volumes: ["./backend:/app","/var/log/foi:/var/log/foi"]
-      frontend:
-        build: { context: ./frontend, dockerfile: Dockerfile }
+        environment:
+          - MYSQL_ROOT_PASSWORD=${mysql_root_password}
+          - MYSQL_LOG_CONSOLE=true
+        volumes:
+          - db_data:/var/lib/mysql
+      onlyoffice:
+        image: onlyoffice/documentserver:latest
+        container_name: onlyoffice
         restart: unless-stopped
-        ports: ["3000:3000"]
-        depends_on: [backend]
-        volumes: ["./frontend:/app","/var/log/foi:/var/log/foi"]
-    volumes: { redis_data: {} }
+        environment:
+          - JWT_ENABLED=true
+          - JWT_SECRET=${onlyoffice_jwt}
+        ports:
+          - "9003:80"
+        depends_on:
+          - seafile
+      api:
+        image: python:3.11-slim
+        container_name: community-api
+        restart: unless-stopped
+        command: ["bash","-lc","apt-get update && apt-get install -y tesseract-ocr poppler-utils libgl1 libglib2.0-0 && pip install --no-cache-dir fastapi uvicorn pillow pytesseract googletrans==3.1.0a0 langdetect PyJWT bcrypt email-validator python-multipart PyPDF2 pymupdf numpy sentence-transformers psycopg2-binary && pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch && python -m uvicorn app:app --host 0.0.0.0 --port 8000"]
+        working_dir: /opt/foi-archive/backend_simple
+        volumes:
+          - /opt/foi-archive/backend_simple:/opt/foi-archive/backend_simple
+          - /var/log/foi:/var/log/foi
+        env_file:
+          - .env
+        environment:
+          - COMMUNITY_DB=/opt/foi-archive/community.db
+          - COMMUNITY_DATA=/opt/foi-archive/data
+          - TESS_LANGS=eng+ara+rus+fra
+          - SEAFILE_BASE_URL=http://localhost:9002
+          - SEAFILE_ADMIN_EMAIL=${admin_email}
+          - SEAFILE_ADMIN_PASSWORD=${admin_password}
+        ports:
+          - "8000:8000"
+    volumes:
+      seafile_data: {}
+      db_data: {}
     EOF
   - mkdir -p /opt/foi-archive/backend
   - |
@@ -227,10 +269,30 @@ DEBUG=false
     cat > /etc/nginx/sites-available/foi-archive << 'EOF'
     server {
         listen 80;
-        server_name _;
-        client_max_body_size 100M;
-        location / { proxy_pass http://localhost:3000; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection 'upgrade'; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto $scheme; proxy_cache_bypass $http_upgrade; }
-        location /api/ { proxy_pass http://localhost:8000/; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection 'upgrade'; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto $scheme; proxy_cache_bypass $http_upgrade; }
+        server_name ${seafile_domain};
+        client_max_body_size 200M;
+        location / {
+            proxy_pass http://localhost:9002/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+        location /onlyoffice/ {
+            proxy_pass http://localhost:9003/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+        location /community-api/ {
+            proxy_pass http://localhost:8000/community-api/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+        # custom assets now mounted directly into Seahub via seahub-data/custom
         location /health { proxy_pass http://localhost:8000/health; }
         location /db-status { alias /opt/foi-archive/.db_status; }
     }
@@ -263,7 +325,7 @@ DEBUG=false
   - |
     cat > /etc/systemd/system/foi-archive.service << 'EOF'
     [Unit]
-    Description=HaqNow.com Application
+    Description=Community.HaqNow Seafile Stack
     After=docker.service network.target
     Requires=docker.service
     [Service]
@@ -283,18 +345,18 @@ DEBUG=false
   - systemctl enable foi-archive
   - |
     cat > /opt/foi-archive/deployment_status.txt << 'EOF'
-    HaqNow.com Server Deployment Status
-    ==================================
-    ✅ Server configuration completed
+    Community.HaqNow Seafile Deployment Status
+    ==========================================
     ✅ Docker and Docker Compose installed
     ✅ Nginx configured and running
-    ✅ Database configuration completed
-    ✅ Application service configured
+    ✅ Seafile container configured with Exoscale SOS
+    ✅ OnlyOffice configured (JWT-secured)
+    ✅ Community API online (OCR/search/redaction endpoints)
     Next Steps:
-    1. Clone your application repository to /opt/foi-archive
-    2. Verify database connectivity: python3 /opt/foi-archive/check_database.py
-    3. Start the application: sudo systemctl start foi-archive
-    4. Check application logs: sudo journalctl -u foi-archive -f
+    1. Point DNS for ${seafile_domain} to this server IP.
+    2. Access Seafile UI at http://${seafile_domain}/ (admin: ${admin_email}).
+    3. Configure Seafile OnlyOffice integration in Seahub admin using http://${seafile_domain}/onlyoffice/ and set the JWT secret.
+    4. Use /api endpoints for OCR/search/notes/tags.
     EOF
 
 write_files:
@@ -315,6 +377,6 @@ final_message: |
   cat /opt/foi-archive/.db_status
   The application will be available at:
   - Frontend: http://your-server-ip/
-  - Backend API: http://your-server-ip/api/
+  - Backend API: http://your-server-ip/community-api/
   - Health check: http://your-server-ip/health
   - Database status: http://your-server-ip/db-status

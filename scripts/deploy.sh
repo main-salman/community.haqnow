@@ -28,355 +28,253 @@ fi
 
 log "Target server IP: ${SERVER_IP}"
 
+# Ensure repo is committed and pushed before remote pulls
+if command -v git >/dev/null 2>&1; then
+  BRANCH=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD)
+  REPO_URL=$(git -C "$PROJECT_ROOT" remote get-url --push origin)
+  if [[ -z "$REPO_URL" ]]; then
+    echo "Error: no git remote 'origin' configured for $PROJECT_ROOT" >&2; exit 1
+  fi
+  log "Committing local changes (if any) and pushing to origin/$BRANCH..."
+  git -C "$PROJECT_ROOT" add -A
+  if ! git -C "$PROJECT_ROOT" diff --cached --quiet || ! git -C "$PROJECT_ROOT" diff --quiet; then
+    git -C "$PROJECT_ROOT" commit -m "deploy: $(date -u +'%Y-%m-%dT%H:%M:%SZ') via scripts/deploy.sh" || true
+  fi
+  git -C "$PROJECT_ROOT" push origin "$BRANCH"
+else
+  echo "Error: git is required to push changes before deployment." >&2; exit 1
+fi
+
 # Ensure required local files
 if [[ ! -f "$PROJECT_ROOT/.env" ]]; then
   echo "Error: .env not found at $PROJECT_ROOT/.env" >&2
   exit 1
 fi
 
-# Copy .env and site to server
-log "Copying .env and static site to server..."
-ssh -o StrictHostKeyChecking=no root@"$SERVER_IP" 'mkdir -p /opt/foi-archive /opt/foi-archive/site'
+# Copy only .env; code will be pulled from GitHub on the server
+log "Copying .env to server (code will be pulled from Git)..."
+ssh -o StrictHostKeyChecking=no root@"$SERVER_IP" 'mkdir -p /opt/foi-archive /opt/foi-archive/site /opt/foi-archive/backend_simple /opt/foi-archive/src'
 scp -o StrictHostKeyChecking=no "$PROJECT_ROOT/.env" root@"$SERVER_IP":/opt/foi-archive/.env || true
-rsync -az --delete "$PROJECT_ROOT/site/" root@"$SERVER_IP":/opt/foi-archive/site/
 
 # Remote setup and deployment (non-docker)
-log "Deploying on server (non-docker model)..."
-ssh -o StrictHostKeyChecking=no root@"$SERVER_IP" bash -s <<'REMOTE_EOF'
+log "Provisioning Seafile + OnlyOffice + API docker-compose stack..."
+ssh -o StrictHostKeyChecking=no root@"$SERVER_IP" bash -s <<REMOTE3
 set -euo pipefail
-
 log() { echo -e "[remote] $*"; }
 
-# Base dirs
-mkdir -p /opt/foi-archive /var/log/foi /var/www/community
+mkdir -p /opt/foi-archive
 cd /opt/foi-archive
 
-# Install prerequisites
-log "Installing system prerequisites..."
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -y >/dev/null
-apt-get install -y \
-  ca-certificates curl gnupg \
-  python3 python3-venv python3-pip \
-  tesseract-ocr poppler-utils libgl1 libglib2.0-0 \
-  nginx git >/dev/null || true
-apt-get -y --fix-broken install >/dev/null || true
-
-# Install Node.js 20 LTS via NodeSource (for potential future frontend builds)
-if ! command -v node >/dev/null 2>&1 || ! node -v | grep -q '^v20'; then
-  install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
-  echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
-  apt-get update -y >/dev/null || true
-  apt-get install -y nodejs >/dev/null || true
-  apt-get -y --fix-broken install >/dev/null || true
+# Ensure docker-compose installed
+if ! command -v docker-compose >/dev/null 2>&1; then
+  apt-get update -y >/dev/null
+  apt-get install -y docker-compose >/dev/null || true
 fi
 
-# Clone or update application source (backend only)
-if [[ ! -d appsrc/.git ]]; then
-  log "Cloning baseline app source (haqnow backend)..."
-  rm -rf appsrc
-  git clone --depth 1 https://github.com/main-salman/haqnow appsrc
+# Ensure git installed and pull latest code from GitHub
+apt-get install -y git >/dev/null 2>&1 || true
+REPO_URL="$REPO_URL"
+BRANCH="$BRANCH"
+if [[ ! -d /opt/foi-archive/src/.git ]]; then
+  log "Cloning repo $REPO_URL (branch $BRANCH)..."
+  rm -rf /opt/foi-archive/src
+  git clone --depth 1 --branch "$BRANCH" "$REPO_URL" /opt/foi-archive/src
 else
-  log "Updating baseline app source..."
-  (cd appsrc && git fetch --depth 1 origin main && git reset --hard origin/main)
+  log "Fetching latest from $REPO_URL (branch $BRANCH)..."
+  git -C /opt/foi-archive/src remote set-url origin "$REPO_URL" || true
+  git -C /opt/foi-archive/src fetch origin "$BRANCH" --depth 1
+  git -C /opt/foi-archive/src reset --hard "origin/$BRANCH"
 fi
 
-# Export environment from .env for child processes
-if [[ -f /opt/foi-archive/.env ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  source /opt/foi-archive/.env
-  set +a
+# Sync code from repo checkout into runtime directories
+rsync -az --delete /opt/foi-archive/src/site/ /opt/foi-archive/site/
+rsync -az --delete /opt/foi-archive/src/backend_simple/ /opt/foi-archive/backend_simple/
+
+# Prepare API Dockerfile (build once; faster restarts)
+cat > /opt/foi-archive/backend_simple/Dockerfile.api <<'EOF'
+FROM python:3.11-slim
+ENV PIP_NO_CACHE_DIR=1 PYTHONDONTWRITEBYTECODE=1
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      tesseract-ocr tesseract-ocr-ara tesseract-ocr-rus tesseract-ocr-fra \
+      poppler-utils libgl1 libglib2.0-0 curl && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY requirements.txt /app/requirements.txt
+RUN pip install -r /app/requirements.txt && \
+    pip install --index-url https://download.pytorch.org/whl/cpu torch
+COPY . /app
+EXPOSE 8000
+CMD ["python","-m","uvicorn","app:app","--host","0.0.0.0","--port","8000"]
+EOF
+
+googletrans==3.1.0a0
+# Ensure requirements.txt exists for reproducible installs (prefer repo version; fallback to baseline)
+if [[ ! -f /opt/foi-archive/backend_simple/requirements.txt ]]; then
+  cat > /opt/foi-archive/backend_simple/requirements.txt <<'EOF'
+fastapi
+uvicorn
+pillow
+pytesseract
+googletrans==3.1.0a0
+langdetect
+PyJWT
+bcrypt
+email-validator
+python-multipart
+PyPDF2
+pymupdf
+numpy
+sentence-transformers
+psycopg2-binary
+pyotp
+requests
+EOF
 fi
 
-# Backend setup
-cd /opt/foi-archive/appsrc/backend
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip >/dev/null
-python -m pip install --upgrade setuptools wheel >/dev/null 2>&1 || true
+# Write docker-compose.yml for Seafile stack
+cat > /opt/foi-archive/docker-compose.yml <<'EOF'
+version: '3.8'
+services:
+  seafile:
+    image: seafileltd/seafile-mc:latest
+    container_name: seafile
+    restart: unless-stopped
+    ports:
+      - "9002:80"
+    environment:
+      - SEAFILE_SERVER_HOSTNAME=${SEAFILE_DOMAIN:-community.haqnow.com}
+      - SEAFILE_ADMIN_EMAIL=${admin_email}
+      - SEAFILE_ADMIN_PASSWORD=${admin_password}
+      - DB_HOST=mysql
+      - DB_ROOT_PASSWD=${MYSQL_ROOT_PASSWORD:-rootpass}
+      - SEAFILE_FILESYSTEM_PROVIDER=s3
+      - S3_USE_HTTPS=true
+      - S3_ACCESS_KEY_ID=${EXOSCALE_S3_ACCESS_KEY}
+      - S3_SECRET_ACCESS_KEY=${EXOSCALE_S3_SECRET_KEY}
+      - S3_ENDPOINT=${EXOSCALE_S3_ENDPOINT}
+      - S3_BUCKET=${EXOSCALE_BUCKET:-community-haqnow-docs}
+      - S3_REGION=${EXOSCALE_S3_REGION}
+    volumes:
+      - seafile_data:/shared
+      - /opt/foi-archive/seahub-custom:/shared/seafile/seahub-data/custom:ro
+    depends_on:
+      - mysql
+  mysql:
+    image: mariadb:10.11
+    container_name: seafile-db
+    restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-rootpass}
+      - MYSQL_LOG_CONSOLE=true
+    volumes:
+      - db_data:/var/lib/mysql
+  onlyoffice:
+    image: onlyoffice/documentserver:latest
+    container_name: onlyoffice
+    restart: unless-stopped
+    environment:
+      - JWT_ENABLED=true
+      - JWT_SECRET=${ONLYOFFICE_JWT_SECRET}
+    ports:
+      - "9003:80"
+    depends_on:
+      - seafile
+  commapi:
+    build:
+      context: /opt/foi-archive/backend_simple
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    working_dir: /app
+    env_file:
+      - .env
+    environment:
+      - COMMUNITY_DB=/opt/foi-archive/community.db
+      - COMMUNITY_DATA=/opt/foi-archive/data
+      - TESS_LANGS=eng+ara+rus+fra
+      - SEAFILE_BASE_URL=http://seafile
+      - SEAFILE_ADMIN_EMAIL=${admin_email}
+      - SEAFILE_ADMIN_PASSWORD=${admin_password}
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD","curl","-f","http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+volumes:
+  seafile_data: {}
+  db_data: {}
+EOF
 
-# Ensure core runtime deps so the server can start
-log "Installing core backend deps..."
-pip install -q fastapi==0.104.1 uvicorn==0.24.0 pydantic==2.5.2 python-dotenv==1.0.0 structlog==23.2.0 requests==2.31.0 || true
-
-# Create a lightweight community app to bring API online while heavy deps are added incrementally
-cat > /opt/foi-archive/appsrc/backend/community_app.py <<'PYAPP'
-from fastapi import FastAPI
-app = FastAPI(title="Community HaqNow API")
-@app.get("/health")
-async def health():
-    return {"status": "ok", "service": "community"}
-PYAPP
-
-# Start minimal backend
-log "Starting lightweight backend (community_app)..."
-pkill -f "uvicorn community_app:app" || true
-nohup python -m uvicorn community_app:app --host 0.0.0.0 --port 8000 >/var/log/foi/backend.out 2>&1 &
-
-# Serve static site
-rsync -az --delete /opt/foi-archive/site/ /var/www/community/
-chown -R www-data:www-data /var/www/community
-
-# Nginx reverse proxy
-log "Configuring nginx..."
-cat > /etc/nginx/sites-available/community-haqnow <<'NGINX'
+# Nginx reverse proxy for Seahub, OnlyOffice, and API
+cat > /etc/nginx/sites-available/foi-archive <<'EOF'
 server {
     listen 80;
-    server_name community.haqnow.com;
+    server_name community.haqnow.com _;
     client_max_body_size 200M;
-
     location / {
-        root /var/www/community;
-        try_files $uri /index.html;
+        proxy_pass http://localhost:9002/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # Temporary: inject redact tool until Seahub template override is verified
+        sub_filter_once off;
+        sub_filter '</body>' '<script src="/media/custom/custom.js"></script></body>';
+        sub_filter_types text/html;
     }
-
-    # Backend API (strip /api/ prefix)
-    location /api/ {
-        proxy_pass http://localhost:8000/;
-        proxy_http_version 1.1;
+    location /onlyoffice/ {
+        proxy_pass http://localhost:9003/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
-
-    # Backend health (maps /health directly)
-    location = /health {
-        proxy_pass http://localhost:8000/health;
+    location /community-api/ {
+        proxy_pass http://localhost:8000/community-api/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
+    # custom assets now mounted directly into Seahub via seahub-data/custom
+    location = /health { proxy_pass http://localhost:8000/health; }
 }
-NGINX
-ln -sf /etc/nginx/sites-available/community-haqnow /etc/nginx/sites-enabled/community-haqnow
+EOF
+
+# Prepare Seahub customization (custom.js at root of custom dir)
+mkdir -p /opt/foi-archive/seahub-custom
+cp -f /opt/foi-archive/site/seahub-redact.js /opt/foi-archive/seahub-custom/custom.js || true
+
+ln -sf /etc/nginx/sites-available/foi-archive /etc/nginx/sites-enabled/foi-archive
 rm -f /etc/nginx/sites-enabled/default || true
-
-nginx -t
-systemctl enable nginx || true
-systemctl restart nginx || true
-
-# Health checks
-sleep 3
-log "Health checks:"
-(set -x; curl -sf http://localhost/health || true)
-(set -x; curl -sf http://localhost/api/health || true)
-
-# If health failing, show backend logs tail
-if ! curl -sf http://localhost/health >/dev/null; then
-  echo "--- backend logs (last 200 lines) ---"
-  tail -n 200 /var/log/foi/backend.out || true
-fi
-REMOTE_EOF
-
-log "Deploying lightweight OCR+search backend..."
-ssh -o StrictHostKeyChecking=no root@"$SERVER_IP" bash -s <<'REMOTE2'
-set -euo pipefail
-log() { echo -e "[remote] $*"; }
-
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -y >/dev/null || true
-# Language packs for OCR
-apt-get install -y tesseract-ocr tesseract-ocr-ara tesseract-ocr-rus tesseract-ocr-fra >/dev/null || true
-
-mkdir -p /opt/foi-archive/backend_simple
-cat > /opt/foi-archive/backend_simple/app.py <<'PY'
-from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from typing import List, Optional
-import os
-import io
-import sqlite3
-from PIL import Image
-import pytesseract
-from langdetect import detect
-from googletrans import Translator
-
-DB_PATH = os.environ.get("COMMUNITY_DB", "/opt/foi-archive/community.db")
-DATA_DIR = os.environ.get("COMMUNITY_DATA", "/opt/foi-archive/data")
-
-os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-os.makedirs(DATA_DIR, exist_ok=True)
-
-app = FastAPI(title="Community OCR+Search API")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-def get_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    return conn
-
-
-def init_db():
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute(
-        "CREATE TABLE IF NOT EXISTS docs (id INTEGER PRIMARY KEY, filename TEXT, lang TEXT, text TEXT, translated TEXT)"
-    )
-    cur.execute(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(filename, text, translated, content='docs', content_rowid='id')"
-    )
-    # Ensure FTS sync trigger
-    cur.executescript(
-        """
-        CREATE TRIGGER IF NOT EXISTS docs_ai AFTER INSERT ON docs BEGIN
-          INSERT INTO docs_fts(rowid, filename, text, translated) VALUES (new.id, new.filename, new.text, new.translated);
-        END;
-        CREATE TRIGGER IF NOT EXISTS docs_ad AFTER DELETE ON docs BEGIN
-          INSERT INTO docs_fts(docs_fts, rowid, filename, text, translated) VALUES('delete', old.id, old.filename, old.text, old.translated);
-        END;
-        CREATE TRIGGER IF NOT EXISTS docs_au AFTER UPDATE ON docs BEGIN
-          INSERT INTO docs_fts(docs_fts, rowid, filename, text, translated) VALUES('delete', old.id, old.filename, old.text, old.translated);
-          INSERT INTO docs_fts(rowid, filename, text, translated) VALUES (new.id, new.filename, new.text, new.translated);
-        END;
-        """
-    )
-    conn.commit()
-    conn.close()
-
-
-init_db()
-translator = Translator()
-
-
-def ocr_image(data: bytes) -> str:
-    image = Image.open(io.BytesIO(data)).convert("RGB")
-    # Use multiple languages to improve coverage
-    text = pytesseract.image_to_string(image, lang=os.environ.get("TESS_LANGS", "eng+ara+rus+fra"))
-    return text.strip()
-
-
-@app.get("/health")
-async def health():
-    return {"status": "ok", "service": "community-simple"}
-
-
-@app.post("/api/upload")
-async def upload(files: List[UploadFile] = File(...)):
-    results = []
-    conn = get_db()
-    cur = conn.cursor()
-    for f in files:
-        content = await f.read()
-        # Save original file
-        save_path = os.path.join(DATA_DIR, f.filename)
-        with open(save_path, "wb") as out:
-            out.write(content)
-        # OCR
-        try:
-            text = ocr_image(content)
-        except Exception as e:
-            text = ""
-        # Detect language and translate to English
-        lang: Optional[str] = None
-        translated: str = text
-        try:
-            if text:
-                lang = detect(text)
-                if lang and lang != "en":
-                    translated = translator.translate(text, src=lang, dest="en").text
-        except Exception:
-            pass
-        cur.execute(
-            "INSERT INTO docs(filename, lang, text, translated) VALUES(?,?,?,?)",
-            (f.filename, lang or "unknown", text, translated),
-        )
-        doc_id = cur.lastrowid
-        results.append({"id": doc_id, "filename": f.filename, "lang": lang or "unknown"})
-    conn.commit()
-    conn.close()
-    return {"uploaded": results}
-
-
-@app.get("/api/search")
-async def search(q: str):
-    conn = get_db()
-    cur = conn.cursor()
-    rows = cur.execute(
-        "SELECT d.id, d.filename, d.lang, snippet(docs_fts, 1, '<b>', '</b>', ' … ', 10) as snip_text, snippet(docs_fts, 2, '<b>', '</b>', ' … ', 10) as snip_trans FROM docs_fts JOIN docs d ON d.id = docs_fts.rowid WHERE docs_fts MATCH ? LIMIT 25",
-        (q,),
-    ).fetchall()
-    conn.close()
-    results = [
-        {
-            "id": r[0],
-            "filename": r[1],
-            "lang": r[2],
-            "snippet_text": r[3],
-            "snippet_translated": r[4],
-        }
-        for r in rows
-    ]
-    return {"results": results}
-
-
-@app.get("/api/docs")
-async def list_docs():
-    conn = get_db()
-    cur = conn.cursor()
-    rows = cur.execute("SELECT id, filename, lang FROM docs ORDER BY id DESC LIMIT 100").fetchall()
-    conn.close()
-    return {"docs": [{"id": r[0], "filename": r[1], "lang": r[2]} for r in rows]}
-PY
-
-cd /opt/foi-archive/backend_simple
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install --upgrade pip >/dev/null
-pip install -q fastapi uvicorn pillow pytesseract googletrans==3.1.0a0 langdetect >/dev/null || true
-
-export COMMUNITY_DB=/opt/foi-archive/community.db
-export COMMUNITY_DATA=/opt/foi-archive/data
-export TESS_LANGS="eng+ara+rus+fra"
-
-# Start service
-pkill -f "uvicorn app:app --host 0.0.0.0 --port 9000" || true
-nohup /opt/foi-archive/backend_simple/.venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port 9000 >/var/log/foi/backend-simple.out 2>&1 &
-
-# Wire nginx /api to new service (temporary while full backend is WIP)
-cat > /etc/nginx/sites-available/community-haqnow <<'NG'
-server {
-    listen 80;
-    server_name community.haqnow.com;
-    client_max_body_size 200M;
-
-    location / {
-        root /var/www/community;
-        try_files $uri /index.html;
-    }
-
-    location /api/ {
-        proxy_pass http://localhost:9000/;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    location = /health {
-        proxy_pass http://localhost:9000/health;
-    }
-}
-NG
-ln -sf /etc/nginx/sites-available/community-haqnow /etc/nginx/sites-enabled/community-haqnow
+# Remove legacy static site mapping if present
+rm -f /etc/nginx/sites-enabled/community-haqnow || true
 nginx -t && systemctl restart nginx || true
 
-# Quick health
-sleep 2
-curl -sf http://localhost:9000/health || true
-REMOTE2
+# Start/refresh stack
+docker-compose pull || true
+# Rebuild API to pick up code changes
+docker-compose build commapi || true
+# Remove old API container to avoid docker-compose 'ContainerConfig' bug on recreate
+docker-compose rm -f -s commapi || true
+docker-compose rm -f -s seafile || true
+docker-compose up -d --remove-orphans
+
+# Basic health check
+sleep 5
+# Wait up to ~5 minutes for API health without hanging terminal
+for i in $(seq 1 50); do 
+  out=$(curl -m 3 -s http://localhost:8000/health || true); 
+  if echo "$out" | grep -q '"status"'; then echo "$out"; break; fi; 
+  sleep 6; 
+done
+REMOTE3
 
 log "Deployment completed."
 
 echo ""
-echo "Application:  http://${SERVER_IP}"
-echo "API health:   http://${SERVER_IP}/api/health"
+echo "Seafile UI:   http://${SERVER_IP}"
+echo "API health:   http://${SERVER_IP}/health"

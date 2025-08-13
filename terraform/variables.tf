@@ -76,6 +76,30 @@ variable "s3_bucket_name" {
   default     = "foi-archive-terraform"
 }
 
+variable "seafile_domain" {
+  description = "Public domain for Seafile/Seahub"
+  type        = string
+  default     = "community.haqnow.com"
+}
+
+variable "onlyoffice_jwt_secret" {
+  description = "JWT secret for OnlyOffice DocumentServer"
+  type        = string
+  sensitive   = true
+}
+
+variable "seafile_version" {
+  description = "Seafile Docker image tag (e.g., latest)"
+  type        = string
+  default     = "latest"
+}
+
+variable "enable_onlyoffice" {
+  description = "Whether to deploy OnlyOffice DocumentServer for live co-editing"
+  type        = bool
+  default     = true
+}
+
 variable "admin_email" {
   description = "Admin email address"
   type        = string

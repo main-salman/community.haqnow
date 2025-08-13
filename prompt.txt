@@ -14,5 +14,66 @@ Prompt for cursor:
 		○ Some of the required features can be re-used from https://github.com/main-salman/haqnow - although that will remain a separate project
 		○ Deploy to the same account as https://github.com/main-salman/haqnow but use a new server and new Exoscale bucket - build the underlying infrastructure required
 Use .env file - that has credentials for exoscale to build infrastructure - use https://github.com/main-salman/haqnow as a template for deploying the infrastructure as well
-Ask me 10 questions before building
+
+
+I'm going to take a quick scan of the current app (backend, static site, deploy script, and history) so I can anchor the revamp plan to what's already here, then I'll ask 10 focused questions before building as requested.
+Ran tool
+Ran tool
+Ran tool
+Ran tool
+
+I scanned the backend, static site, and deploy script to understand the current baseline. Before building, I'll record the revamp intent and 10 questions in `history.txt`, then ask you here to unblock implementation.
+Ran tool
+
+I logged the revamp plan and 10 confirmation questions into `history.txt`. Next, I’ll present those questions here so you can answer; after your answers, I’ll proceed to implementation.
+Ran tool
+### Revamp approach: Seafile core + required features
+We’ll base storage/sync and collaboration on Seafile’s server stack and extend with OCR, translation, redaction, tagging, search, and AI Q&A. Reference: Seafile repositories: daemon, server core, and web UI [haiwen/seafile](`https://github.com/haiwen/seafile`). We’ll deploy Seafile in your Exoscale environment, integrate auth/MFA, and expose custom APIs/UI to satisfy `prompt.txt`.
+
+### 10 confirmations before building
+Please answer briefly per item:
+
+1) Seafile deployment model
+- Full Seafile (server + Seahub) managed by us, with our app extending it, or headless Seafile with a custom-only web app? Recommended: full Seafile for easier upgrades.
+
+2) Object storage on Exoscale
+- Use Exoscale SOS (S3-compatible) as Seafile backend? Confirm bucket name, zone, and whether to reuse `.env` credentials.
+
+3) Auth and MFA source of truth
+- Use Seafile accounts/MFA/SSO as canonical and SSO our custom app into it, replacing current JWT? Or keep current auth and sync users into Seafile? Recommended: Seafile canonical.
+
+4) Roles and permissions
+- Confirm roles Admin/Editor/Viewer. Any group-based sharing beyond single-tenant org? Map to Seafile system admin/library owner/read-write/read-only.
+
+5) Bulk ingestion workflow
+- Background queued processing with progress/status and notifications ok? Max single file size and typical batch size?
+
+6) Office docs handling
+- Convert Office files to PDF for OCR/indexing on ingest (via headless LibreOffice) while preserving originals? Strip metadata on derivatives only?
+
+7) Search stack
+- Seafile’s native search vs external (Elasticsearch/OpenSearch). Want hybrid (keyword + semantic vectors) now or later?
+
+8) AI Q&A constraints
+- Confirm “local only” LLM and target model/hardware. Require citations/snippets and confidence in answers? Any PII guardrails?
+
+9) Collaboration scope
+- Is Markdown/Wiki-style coauthoring + PDF/image annotations/highlights sufficient, or do you need Google-Docs-style live coediting of Office/PDF content?
+
+10) Redaction/export/audit
+- Burn-in redactions on derived PDFs; originals preserved. Store derivatives alongside originals? Need audit logs and retention now or in a later phase?
+
+Once you confirm, I’ll:
+- Provision Seafile with Exoscale SOS
+- Integrate unified auth/MFA
+- Implement ingestion (OCR/translate/metadata strip), tagging, notes
+- Add redaction/export
+- Add search and AI Q&A endpoints with citations
+
+Reference cited: [Seafile project](`https://github.com/haiwen/seafile`)
+
+- Added a dated entry to `history.txt` capturing the Seafile-based revamp plan and the 10 questions, without deleting prior history.
+
+
+1. full 2. yes use Exoscale SOS - create a new bucket and deploy using terraform @terraform/ 3. use seafile auth 4. use seafile system 5. use seafile defaults 6. yes and yes 7. native search + semantic vectors 8. local only 9. google style co-editing with all the features defined in @prompt.txt  10. burn-in redactions on derived PDFs. No audit logs. 
 

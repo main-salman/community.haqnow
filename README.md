@@ -72,7 +72,7 @@ Notes:
 |  |     ├── /              |                    ^                          |
 |  |     |    -> /var/www/community (static)     |                          |
 |  |     ├── /health -> 127.0.0.1:8000/health    | s3_service (boto3)       |
-|  |     └── /api/  -> 127.0.0.1:8000/           |                          |
+|  |     └── /community-api/ -> 127.0.0.1:8000/community-api/ |
 |  |   - uvicorn community_app:app :8000         |                          |
 |  |                        |                    |                          |
 |  +------------------------+--------------------+--------------------------+

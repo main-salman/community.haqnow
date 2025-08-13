@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Login — Community HaqNow</title>
+    <link rel="stylesheet" href="/apple.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Login</h1>
+      <form id="loginForm">
+        <div>
+          <label for="email">Email</label>
+          <input id="email" type="email" required />
+        </div>
+        <div>
+          <label for="password">Password</label>
+          <input id="password" type="password" required />
+        </div>
+        <div id="otpRow" style="display:none">
+          <label for="otp">One-time code</label>
+          <input id="otp" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="123456" />
+        </div>
+        <button type="submit">Sign in</button>
+        <div class="error" id="error"></div>
+        <p class="muted">After login, your session token is stored locally and used for API calls. Want MFA? Enable it from <a href="/mfa.html">MFA setup</a> after signing in.</p>
+      </form>
+    </main>
+    <script>
+      const form = document.getElementById('loginForm');
+      const errorBox = document.getElementById('error');
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        errorBox.textContent = '';
+        const email = document.getElementById('email').value.trim();
+        const password = document.getElementById('password').value;
+        const otp = document.getElementById('otp').value.trim();
+        try {
+          const res = await fetch('/community-api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(otp ? { email, password, otp_code: otp } : { email, password })
+          });
+          if (!res.ok) {
+            let detail = 'Login failed';
+            try { const data = await res.json(); detail = data.detail || detail; } catch (_) { /* HTML error */ }
+            if (/MFA required/i.test(detail)) {
+              document.getElementById('otpRow').style.display = '';
+            }
+            throw new Error(detail);
+          }
+          const data = await res.json();
+          localStorage.setItem('token', data.access_token);
+          window.location.href = '/app.html';
+        } catch (err) {
+          errorBox.textContent = err.message;
+        }
+      });
+    </script>
+  </body>
+  </html>
+
+

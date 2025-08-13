@@ -13,6 +13,22 @@ provider "exoscale" {
   secret = var.exoscale_secret_key
 }
 
+provider "aws" {
+  access_key                  = var.s3_access_key
+  secret_key                  = var.s3_secret_key
+  region                      = "us-east-1"
+  skip_credentials_validation = true
+  skip_requesting_account_id  = true
+  endpoints {
+    s3 = "https://${var.s3_endpoint}"
+  }
+}
+
+resource "aws_s3_bucket" "seafile_data" {
+  bucket        = var.s3_bucket_name
+  force_destroy = true
+}
+
 resource "exoscale_dbaas" "foi_mysql" {
   zone = var.zone
   name = "foi-archive-mysql-${var.environment}"
@@ -134,6 +150,10 @@ resource "exoscale_compute_instance" "foi_app" {
     postgres_password   = var.postgres_password
     postgres_database   = var.postgres_database
     mysql_root_password = var.mysql_root_password
+    seafile_domain      = var.seafile_domain
+    onlyoffice_jwt      = var.onlyoffice_jwt_secret
+    seafile_version     = var.seafile_version
+    enable_onlyoffice   = var.enable_onlyoffice
   }))
 }
 

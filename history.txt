@@ -35,3 +35,66 @@
 2025-08-12 00:26 UTC — Terraform cycle fix:
 - Introduced `allowed_db_cidrs` in `terraform/variables.tf` and used it for DB `ip_filter` to break cycle.
 - Default `0.0.0.0/0` temporarily; will update to instance `/32` after provisioning by running `terraform apply` with the resolved IP.
+
+2025-08-12 00:40 UTC — Admin login URL check:
+- Verified nginx/site/backend: no admin/auth routes implemented yet.
+- `/admin` currently serves the SPA fallback (`site/index.html`), so it does not show a login page.
+- Next: when implementing auth (same as `haqnow`), wire admin UI at `/admin` and API endpoints under `/api/auth/*`.
+
+2025-08-12 01:00 UTC — Implemented minimal auth (JWT) and admin/user flows:
+- Backend (`backend_simple/app.py`):
+  - Added `users` table with roles (admin/editor/viewer).
+  - Seed admin user from `.env` keys: `admin_email`, `admin_password`.
+  - Added JWT issuance/verification (`/api/auth/login`, `/api/auth/me`), with `JWT_SECRET_KEY`.
+  - Protected document APIs: `/api/upload`, `/api/search`, `/api/docs` now require `Authorization: Bearer <token>`.
+  - Admin endpoints: `POST /api/admin/users` (create), `GET /api/admin/users` (list). Admin-only.
+- Static site:
+  - Added `site/login.html` (login form stores token in `localStorage`).
+  - Added `site/admin.html` (create users, list users; uses bearer token).
+  - Linked from `site/index.html` and added nginx redirects `/login` → `/login.html`, `/admin` → `/admin.html`.
+- Deploy script (`scripts/deploy.sh`):
+  - Install `bcrypt` and `PyJWT` for auth.
+- Note: This is a minimal baseline (no MFA yet); MFA to be added consistent with `haqnow` in next step.
+
+2025-08-13 00:15 UTC — Revamp plan kickoff: base on Seafile + prompt features; collecting confirmations before implementation.
+- Context: We'll integrate with Seafile stack for storage/sync and add OCR/translation, tagging, redaction, AI Q&A, and collaboration features per `prompt.txt`. Reference upstream repos: core daemon [haiwen/seafile], server [haiwen/seafile-server], web UI [haiwen/seahub].
+- Blocking questions for confirmation (reply inline; numbering stable for tracking):
+  1) Seafile components: Do you want a full Seafile deployment (server + Seahub) managed by us, with our app extending it, or a headless Seafile server with a custom web app only? (Full = easier upgrades; headless = fully custom UX.)
+  2) Storage backend: OK to use Exoscale SOS (S3-compatible) as Seafile object storage? Please confirm bucket name, zone, and whether to reuse creds in `.env`.
+  3) Auth/MFA: Should we use Seafile’s built-in accounts + MFA and SSO as the source of truth and SSO our custom app to it, replacing the current JWT auth, or keep our current auth and mirror users into Seafile? (Recommend: Seafile auth as canonical.)
+  4) Roles mapping: Confirm roles Admin/Editor/Viewer. Map to Seafile permissions (system admin, library owner, read-write, read-only). Any group-based sharing requirements beyond single-tenant org?
+  5) Ingestion pipeline: For bulk uploads (hundreds/thousands), is background processing with a queue acceptable (status + notifications), or must uploads block until OCR/translation completes? Max single file size and batch size?
+  6) File handling: For Office files (docx/xlsx/pptx), should we convert to PDF for OCR/indexing on ingest (via LibreOffice headless), while preserving originals? OK to strip metadata on derivatives and keep originals untouched?
+  7) Search: Prefer Seafile-native search or external engine? Our prior baseline used SQLite FTS; for scale we suggest OpenSearch/Elasticsearch. Do you want hybrid search (keyword + semantic vectors) in this phase?
+  8) AI Q&A: Confirm “local only” LLM. Which model/hardware budget? Should answers include citations/snippets and per-answer confidence? Any content/PII guardrails required?
+  9) Collaboration: For “live editing,” is Markdown/Wiki-style coauthoring sufficient (supported by Seafile), with PDF/image annotations/highlights, or do you require Google-Docs-style coediting for Office/PDF content itself?
+  10) Redaction/export/audit: Redactions should be burn-in on derived PDFs, originals preserved. Where to store derivatives (same library/path)? Do you need audit logs (who/when/what) and retention policies now or later?
+
+— After your answers, we will: (a) provision Seafile with Exoscale SOS, (b) integrate unified auth, (c) wire ingestion workers, (d) add tagging/notes APIs backed by Seafile metadata, (e) implement redaction/export, (f) implement AI Q&A with citations.
+
+2025-08-13 00:40 UTC — Implemented infra/app wiring per confirmations.
+- Terraform: added `exoscale_sos_bucket.seafile_data`, variables `seafile_domain`, `onlyoffice_jwt_secret`, `seafile_version`, `enable_onlyoffice`.
+- Cloud-init: docker-compose stack for `seafile` (S3-backed), `mysql` (MariaDB), `onlyoffice`, and `api`. Nginx proxies root to Seahub, `/onlyoffice/` to OnlyOffice, `/community-api/` to API.
+- Backend: added Seafile token auth support (`Authorization: Token <token>`) while preserving JWT; best-effort upload of ingested files to a Seafile repo.
+- Deploy script: simplified to refresh API container in place.
+- .env: added `ONLYOFFICE_JWT_SECRET` and `SEAFILE_DOMAIN=community.haqnow.com`.
+
+2025-08-13 09:30 UTC — Fix Seahub 404s caused by API path collision.
+- Root cause: Nginx proxied `/api/` to our FastAPI, intercepting Seahub calls to Seafile endpoints like `/api/v2.1/*`, resulting in 404s in the Seafile UI (users, notifications, sysinfo).
+- Change: Namespaced our custom API under `/community-api/` to avoid collision.
+- Edits:
+  - backend `backend_simple/app.py`: moved all routes from `/api/*` to `/community-api/*` (auth, docs, tags, notes, upload, QA, bulk ops, semantic search).
+  - static site (`site/*.html`): updated all fetch URLs to `/community-api/*`; `index.html` health link now points to `/health`.
+  - Nginx (both `terraform/cloud-init.yml` and `scripts/deploy.sh`): changed location block from `/api/` → `/community-api/` and upstream path to `/community-api/`.
+  - Docs in `cloud-init.yml` final message updated to reference `/community-api/`.
+- Impact: Seahub’s `/api/v2.1/*` now reaches Seafile; admin/user/library operations work. Our app remains accessible under `/community-api/*`.
+
+2025-08-13 12:25 UTC — Added GUI redaction tool and backend image redaction.
+- Frontend: new `site/redact.html` with click-and-drag rectangles and submit. Linked from `site/app.html` per document.
+- Backend: `POST /community-api/docs/{doc_id}/redact` now uploads result to Seafile; added `POST /community-api/docs/{doc_id}/redact-image` for PNG/JPEG using PIL.
+- Deploy: reuse existing pipeline; no infra changes required.
+
+2025-08-13 12:45 UTC — Switch to Seahub customization for inline redaction.
+- Mount `seahub-data/custom` from host via docker-compose: `/opt/foi-archive/seahub-custom` -> `/shared/seafile/seahub-data/custom`.
+- Remove Nginx `sub_filter` injector; assets will be served by Seahub custom path.
+- Left the same JS (`site/seahub-redact.js`) to be installed into custom dir at deploy.

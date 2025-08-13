@@ -20,7 +20,9 @@ TF_APPLY_VARS := \
   -var sendgrid_api_key=$(or $(SENDGRID_API_KEY),) \
   -var mysql_password=$(or $(MYSQL_PASSWORD),$(shell openssl rand -hex 16)) \
   -var mysql_root_password=$(or $(MYSQL_ROOT_PASSWORD),$(shell openssl rand -hex 16)) \
-  -var postgres_password=$(or $(POSTGRES_PASSWORD),$(shell openssl rand -hex 16))
+  -var postgres_password=$(or $(POSTGRES_PASSWORD),$(shell openssl rand -hex 16)) \
+  -var seafile_domain=$(or $(SEAFILE_DOMAIN),community.haqnow.com) \
+  -var onlyoffice_jwt_secret=$(or $(ONLYOFFICE_JWT_SECRET),$(shell openssl rand -hex 32))
 
 .PHONY: init apply output ip destroy
 
