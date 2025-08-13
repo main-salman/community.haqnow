@@ -42,7 +42,19 @@
       // Try to place inside Seahub toolbar if present
       const toolbar = document.querySelector('.view-file-op') || document.querySelector('.file-op') || document.querySelector('header .operations') || document.querySelector('header');
       const btn = h('button',{className:'hn-redact-btn',innerText:'Redact', title:'Draw boxes to redact'});
-      if (toolbar) { btn.classList.add('toolbar'); toolbar.appendChild(btn); } else { document.body.appendChild(btn); }
+      if (toolbar) {
+        btn.classList.add('toolbar');
+        const printBtn = toolbar.querySelector('[title="Print"], [aria-label="Print"], .sf2-icon-print, .icon-print');
+        if (printBtn && printBtn.parentElement === toolbar) {
+          toolbar.insertBefore(btn, printBtn);
+        } else if (toolbar.firstChild) {
+          toolbar.insertBefore(btn, toolbar.firstChild);
+        } else {
+          toolbar.appendChild(btn);
+        }
+      } else {
+        document.body.appendChild(btn);
+      }
       btn.addEventListener('click', openOverlay);
     }
 
