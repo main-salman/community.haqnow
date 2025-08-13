@@ -5,7 +5,8 @@
     function style(css){ const s = document.createElement('style'); s.textContent = css; document.head.appendChild(s); }
     style(`
       .hn-redact-btn{position:fixed;right:16px;top:16px;z-index:9999;padding:8px 12px;border-radius:8px;background:#111827;color:#fff;border:0;}
-      .hn-redact-btn.toolbar{position:static;margin-left:8px;}
+      /* When placed into Seahub toolbar (flex), force it to the front */
+      .hn-redact-btn.toolbar{position:static;margin:0 8px 0 0;order:-1;}
       .hn-redact-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.1);z-index:9998;cursor:crosshair}
       .hn-redact-canvas{position:absolute;left:0;top:0;}
       .hn-redact-toolbar{position:fixed;left:16px;top:16px;z-index:9999;display:flex;gap:8px;}
@@ -40,11 +41,11 @@
       if (!(location.pathname.includes('/lib/') && location.pathname.includes('/file/'))) return;
       if (document.querySelector('.hn-redact-btn')) return;
       // Try to place inside Seahub toolbar if present
-      const toolbar = document.querySelector('.view-file-op') || document.querySelector('.file-op') || document.querySelector('header .operations') || document.querySelector('header');
+      const toolbar = document.querySelector('.view-file-op, .file-op, .pdf-op, header .operations, header .d-flex, header');
       const btn = h('button',{className:'hn-redact-btn',innerText:'Redact', title:'Draw boxes to redact'});
       if (toolbar) {
         btn.classList.add('toolbar');
-        const printBtn = toolbar.querySelector('[title="Print"], [aria-label="Print"], .sf2-icon-print, .icon-print');
+        const printBtn = document.querySelector('[title="Print"], [aria-label="Print"], .sf2-icon-print, .icon-print');
         if (printBtn && printBtn.parentElement === toolbar) {
           toolbar.insertBefore(btn, printBtn);
         } else if (toolbar.firstChild) {
