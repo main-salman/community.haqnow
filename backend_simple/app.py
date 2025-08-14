@@ -444,19 +444,34 @@ def create_access_token(email: str, role: str, expires_minutes: int = 60 * 24) -
 
 
 def get_current_user(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Dict[str, str]:
-    # JWT-based auth (OpenKM is used only as DMS backend; app manages its own auth)
-    if not credentials or (credentials.scheme or "").lower() != "bearer":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
-    token = credentials.credentials or ""
+    # Prefer JWT-based auth
+    if credentials and (credentials.scheme or "").lower() == "bearer":
+        token = credentials.credentials or ""
+        try:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            email = payload.get("sub") or ""
+            role = payload.get("role") or "viewer"
+            if not email:
+                raise ValueError("no-sub")
+            return {"id": email, "email": email, "role": role}
+        except Exception:
+            pass
+    # Fallback: OpenKM session cookie (JSESSIONID)
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        email = payload.get("sub") or ""
-        role = payload.get("role") or "viewer"
-        if not email:
-            raise ValueError("no-sub")
-        return {"id": email, "email": email, "role": role}
+        cookie_header = request.headers.get("cookie") or request.headers.get("Cookie")
+        okm_base = os.environ.get("OPENKM_BASE_URL", "").rstrip("/")
+        if cookie_header and okm_base:
+            # Simple session validation by querying a lightweight endpoint
+            try:
+                r = requests.get(f"{okm_base}/services/rest/document/getRootFolder", headers={"Cookie": cookie_header}, timeout=5)
+                if r.status_code == 200:
+                    # We don't have email; use OpenKM user marker
+                    return {"id": "openkm-user", "email": "openkm-user@local", "role": "viewer"}
+            except Exception:
+                pass
     except Exception:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+        pass
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
 
 
 def require_admin(user: Dict[str, str] = Depends(get_current_user)) -> Dict[str, str]:

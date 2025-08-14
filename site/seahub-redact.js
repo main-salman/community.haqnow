@@ -1,6 +1,6 @@
 (function(){
   try {
-    const token = '';
+    // OpenKM integration: use JSESSIONID cookie and OpenKM PDF preview iframe
     function h(tag, props, ...kids){ const el = document.createElement(tag); Object.assign(el, props||{}); kids.forEach(k => el.appendChild(typeof k==='string'?document.createTextNode(k):k)); return el; }
     function style(css){ const s = document.createElement('style'); s.textContent = css; document.head.appendChild(s); }
     style(`
@@ -37,11 +37,12 @@
     }
 
     function getPdfIframe(){
+      // OpenKM uses PDF.js in an iframe under /OpenKM/frontend/preview
       const frames = Array.from(document.querySelectorAll('iframe'));
       for (const fr of frames) {
         try {
-          if (fr.src && /viewer\.html/i.test(fr.src)) return fr;
-          if (fr.contentDocument && fr.contentDocument.getElementById('toolbarViewerRight')) return fr;
+          if (fr.src && /OpenKM\/frontend\//i.test(fr.src)) return fr;
+          if (fr.contentDocument && (fr.contentDocument.getElementById('toolbarViewerRight') || fr.contentDocument.querySelector('#viewerContainer'))) return fr;
         } catch {}
       }
       return null;
@@ -204,7 +205,7 @@
       };
     }
 
-    // Keep trying in case Seahub changes DOM after load
+    // Keep trying in case OpenKM changes DOM after load
     ensureButton();
     function addFloating(){
       if (document.querySelector('.hn-redact-fab')) return;
@@ -213,7 +214,7 @@
       document.body.appendChild(btn);
     }
 
-    document.addEventListener('DOMContentLoaded', ()=>{ try{console.log('[hn-redact] init');}catch(e){} addFloating(); ensureButton(); });
+    document.addEventListener('DOMContentLoaded', ()=>{ try{console.log('[okm-redact] init');}catch(e){} addFloating(); ensureButton(); });
     setInterval(ensureButton, 1500);
     try { new MutationObserver(() => ensureButton()).observe(document.documentElement, {childList:true,subtree:true}); } catch {}
     try { window.addEventListener('keydown', (e)=>{ if ((e.key||'').toLowerCase()==='r') { e.preventDefault(); openOverlay(); } }); } catch {}

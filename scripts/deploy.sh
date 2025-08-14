@@ -139,6 +139,8 @@ services:
     restart: unless-stopped
     ports:
       - "9080:8080"
+    volumes:
+      - /opt/foi-archive/openkm-data:/var/lib/openkm
   commapi:
     build:
       context: /opt/foi-archive/backend_simple
@@ -218,11 +220,14 @@ server {
     }
 
     # Serve app static UI under /app/
-    location /app/ {
-        alias /opt/foi-archive/site/;
-        autoindex off;
-        try_files $uri $uri/ =404;
+    location /media/custom/custom.js {
+        alias /opt/foi-archive/site/seahub-redact.js;
+        add_header Content-Type application/javascript;
     }
+    # Inject the redaction script into OpenKM pages
+    sub_filter_once off;
+    sub_filter '</body>' '<script src="/media/custom/custom.js"></script></body>';
+    sub_filter_types text/html;
 
     location /community-api/ {
         proxy_pass http://localhost:8000/community-api/;
