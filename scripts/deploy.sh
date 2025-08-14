@@ -217,6 +217,13 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
+    # Serve app static UI under /app/
+    location /app/ {
+        alias /opt/foi-archive/site/;
+        autoindex off;
+        try_files $uri $uri/ =404;
+    }
+
     location /community-api/ {
         proxy_pass http://localhost:8000/community-api/;
         proxy_set_header Host $host;
